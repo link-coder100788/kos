@@ -321,7 +321,11 @@ A `.c` file in `userspace/cmd/` is a system command instead: `make disk` puts it
 
 ### In K
 
-K is a small statically typed language compiled to AArch64 by a compiler built into the kernel (`kernel/src/k/`). There are examples in `/k` on the disk (`basic.k`, `h.k`). `k build` writes `out.kbin` to the current folder:
+K is a small statically typed language compiled to AArch64 by a compiler built into the kernel (`kernel/src/k/`).
+
+It reads a bit like a stripped-down Rust: a file starts with `module name;`, functions are `fn add(a: u64, b: u64) -> u64 { ... }`, and variables are `let` (immutable) or `mut`, always with a type. The types are the fixed-size integers (`u8`–`u64`, `i8`–`i64`, `usize`, `isize`), `bool`, `char`, string literals, fixed arrays (`u64[4]`) and pointers (`u64 pointer`, with `&x` and `*p`), plus your own `struct`s and `enum`s (matched with `match`). Control flow is `if`/`else`, `while`, `loop`, `break` and `continue`. There's no standard library: after `import kernel;` a program talks to the OS through a handful of built-ins, `kernel.print("...")`, `kernel.write_byte`, `kernel.write_bytes(ptr, len)`, `kernel.read_line`, `kernel.dump()` and `kernel.exit(code)`, which compile to syscalls. The compiler goes lexer → parser → type checker → IR → AArch64 machine code and packs the result into a KBIN file, which `k run` loads into user memory and runs as an ordinary process, just like a C program.
+
+There are examples in `/k` on the disk (`basic.k`, `h.k`). `k build` writes `out.kbin` to the current folder:
 
 ```
 kos:/> cd k
