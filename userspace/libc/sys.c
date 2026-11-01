@@ -318,6 +318,28 @@ long utc_offset(void) {
     return (long)SVC(0x7, 4, 0, 0, 0, 0);
 }
 
+// ---- sound -------------------------------------------------------------------------
+
+long snd(uint32_t hz) {
+    return (long)SVC(0x10, 0, hz, 0, 0, 0);
+}
+
+long beep(void) {
+    return (long)SVC(0x10, 1, 0, 0, 0, 0);
+}
+
+long play(const char* notes) {
+    return (long)SVC(0x10, 2, notes, c_strlen(notes), 0, 0);
+}
+
+long snd_stop(void) {
+    return (long)SVC(0x10, 3, 0, 0, 0, 0);
+}
+
+int snd_busy(void) {
+    return (int)SVC(0x10, 4, 0, 0, 0, 0);
+}
+
 // ---- random numbers ----------------------------------------------------------------
 
 long random_bytes(void* buf, size_t len) {

@@ -842,6 +842,55 @@ pub fn syscall_uname(frame: &mut SyscallContext) {
     frame[0] = 0;
 }
 
+// ---- sound ---------------------------------------------------------------------
+// One voice: each call replaces whatever was playing (see crate::sound).
+// A program's sound stops when it ends, so `play` and `beep` wait for
+// theirs to finish (or be replaced), like TempleOS's.
+
+mod sound {
+    use kos_derive::const_unique;
+
+    pub const SND: u64 = 0;   // (hz) -> 0; 0 Hz is silence
+    pub const BEEP: u64 = 1;  // -> 0, once it's over
+    pub const PLAY: u64 = 2;  // (notes, len) -> 0, once the song is over
+    pub const STOP: u64 = 3;  // -> 0
+    pub const BUSY: u64 = 4;  // -> 1 if something is playing, else 0
+
+    const_unique!(SND, BEEP, PLAY, STOP, BUSY);
+}
+
+#[syscall(16)]
+pub fn syscall_sound(frame: &mut SyscallContext) {
+    // Waits for sound `id` to finish, unless the program is killed meanwhile.
+    let wait = |id: u64| {
+        while !crate::sound::finished(id) && !scheduler::current_killed() {
+            crate::arch::timer::delay_ms(10);
+        }
+    };
+    let result = match frame[16] {
+        sound::SND => crate::sound::snd(frame[0].min(u32::MAX as u64) as u32),
+        sound::BEEP => crate::sound::beep().map(wait),
+        sound::PLAY => match user_str(frame, frame[0], frame[1]) {
+            Some(notes) => crate::sound::play(notes).map(wait),
+            None => Err("bad notes".to_string()),
+        },
+        sound::STOP => crate::sound::stop(),
+        sound::BUSY => {
+            frame[0] = crate::sound::busy() as u64;
+            return;
+        }
+        _ => {
+            log::warn!("sound syscall: unknown sub-command {}", frame[16]);
+            frame[0] = fail("unknown sound call");
+            return;
+        }
+    };
+    frame[0] = match result {
+        Ok(()) => 0,
+        Err(why) => fail(&why),
+    };
+}
+
 fn find_syscall(num: u64) -> Option<&'static SyscallEntry> {
     unsafe {
         let mut ptr = core::ptr::addr_of!(__syscalls_start);

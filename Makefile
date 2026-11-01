@@ -48,6 +48,9 @@ GUI      ?= $(if $(filter Darwin,$(shell uname -s)),cocoa,gtk)$(comma)zoom-to-fi
 # it finds.
 DISPLAY_DEV ?= virtio-gpu
 DISPLAY_DEVICE := $(if $(filter ramfb,$(DISPLAY_DEV)),ramfb,virtio-gpu-device)
+# Where KOS's sound goes: coreaudio on macOS, pa (PulseAudio) on Linux;
+# AUDIO=none for silence, or AUDIO="wav,path=out.wav" to record it.
+AUDIO    ?= $(if $(filter Darwin,$(shell uname -s)),coreaudio,pa)
 
 KERNEL_BIN := $(BUILD)/kernel.bin
 KOS_BIN    := $(BUILD)/kos.bin
@@ -59,6 +62,7 @@ QEMU := qemu-system-aarch64 \
 	-drive file=$(DISK),if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
 	-device virtio-keyboard-device -device virtio-tablet-device \
 	-netdev user,id=net0 -device virtio-net-device,netdev=net0 \
+	-audiodev $(AUDIO),id=snd0 -device virtio-sound-device,audiodev=snd0,streams=1 \
 	-rtc base=utc -fw_cfg name=opt/kos/utc_offset,string=$(UTC_OFFSET) \
 	$(if $(LOG),-fw_cfg name=opt/kos/log$(comma)string=$(subst $(comma),$(comma)$(comma),$(LOG)))
 
@@ -95,9 +99,11 @@ lldb:
 
 # The kernel powers off after the last test, printing "test result: ok"
 # or "test result: FAILED"; anything else (a hang you quit) also fails.
+# Sound goes to build/test.wav instead of the speakers.
 test: | $(DISK)
 	$(MAKE) kos FEATURES="$(FEATURES) test"
-	$(QEMU) -nographic | tee $(BUILD)/test.log
+	@rm -f $(BUILD)/test.wav
+	$(subst -audiodev $(AUDIO)$(comma),-audiodev wav$(comma)path=$(BUILD)/test.wav$(comma),$(QEMU)) -nographic | tee $(BUILD)/test.log
 	@if grep -q "test result: ok" $(BUILD)/test.log; then \
 		echo "make test: all tests passed"; \
 	else \

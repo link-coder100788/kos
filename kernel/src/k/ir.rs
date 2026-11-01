@@ -34,6 +34,7 @@ pub enum Ir {
     Neg, Not, BitNot,
     Call(String, usize /*argc*/),
     KernelCall(u8 /*syscall#*/, usize /*argc*/),
+    KernelSubCall(u8 /*syscall#*/, u8 /*sub-command, in x16*/, usize /*argc*/),
     Ret(bool /*has_value: a value was pushed and must be popped into x0*/),
     Label(usize),
     Jump(usize),
@@ -67,6 +68,15 @@ pub const KERNEL_SYSCALLS: &[(&str, u8)] = &[
     ("write_bytes", 2), // (ptr: u8 pointer, len: u64)
     ("read_line", 3),   // (ptr: u8 pointer, max_len: u64) -> u64 (bytes read)
     ("dump", 8),        //
+];
+
+// Kernel functions that are one sub-command of a multiplexed syscall:
+// (name, `svc #N`, sub-command put in x16). Ir::KernelSubCall.
+pub const KERNEL_SUBCALLS: &[(&str, u8, u8)] = &[
+    ("sleep_ms", 7, 0), // (ms: u64)
+    ("snd", 16, 0),     // (hz: u64): a steady tone, 0 = silence
+    ("beep", 16, 1),    // waits until it's over
+    ("play", 16, 2),    // ("notes"): string literal only, expanded to (ptr, len) like print; waits until it's over
 ];
 
 struct FnCtx<'a> {
@@ -488,6 +498,19 @@ fn lower_expr(e: &Expr, ctx: &mut FnCtx, out: &mut Vec<Ir>) {
                     }
                     _ => panic!("kernel.print() only supports string literal arguments in this version — use kernel.write_bytes(ptr, len) for anything else"),
                 }
+            } else if let Some(&(_, num, sub)) = KERNEL_SUBCALLS.iter().find(|(n, _, _)| *n == name) {
+                if name == "play" {
+                    let Expr::StrLit(s) = &args[0] else {
+                        panic!("kernel.play() only supports a string literal");
+                    };
+                    let label = ctx.intern_string(s);
+                    out.push(Ir::PushGlobalAddr(label));
+                    out.push(Ir::PushImm(s.len() as u64));
+                    out.push(Ir::KernelSubCall(num, sub, 2));
+                } else {
+                    for a in args { lower_expr(a, ctx, out); }
+                    out.push(Ir::KernelSubCall(num, sub, args.len()));
+                }
             } else {
                 for a in args { lower_expr(a, ctx, out); }
                 let num = KERNEL_SYSCALLS.iter().find(|(n, _)| *n == name).map(|(_, n)| *n)
@@ -724,6 +747,13 @@ pub mod tests {
         assert!(body.contains(&Ir::KernelCall(exit_num, 1)));
     }
 
+    fn test_kernel_play_literal_uses_sound_subcall() {
+        let body = lower_main(r#"module m; fn main() { kernel.play("C D E"); kernel.snd(440); }"#);
+        assert!(body.contains(&Ir::PushImm(5))); // "C D E".len() == 5
+        assert!(body.contains(&Ir::KernelSubCall(16, 2, 2)));
+        assert!(body.contains(&Ir::KernelSubCall(16, 0, 1)));
+    }
+
     fn test_function_call_lowering() {
         let src = "module m; fn add(a: u64, b: u64) -> u64 { return a + b; } \
                     fn main() { let x: u64 = add(1, 2); }";
@@ -814,6 +844,7 @@ pub mod tests {
             &test_match_lowers_to_equality_chain,
             &test_kernel_print_literal_expands_to_write_bytes,
             &test_kernel_exit_uses_correct_syscall_number,
+            &test_kernel_play_literal_uses_sound_subcall,
             &test_function_call_lowering,
             &test_sizeof_is_compile_time_constant,
             &test_sizeof_struct,

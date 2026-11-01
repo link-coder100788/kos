@@ -242,6 +242,17 @@ fn test_kill_ends_a_looping_program() {
     assert!(ended_within(id, 1000));
 }
 
+fn test_killed_programs_sound_stops() {
+    // snd(440) (svc 16, sub-command 0), then loop: its tone plays until
+    // it's killed, and stops once it's been reaped.
+    let id = start(&[movz(0, 440, 0), movz(16, 0, 0), svc(16), LOOP]);
+    let sounding_within = |ms: u64, want: bool| (0..ms / 10).any(|_| { sleep_ms(10); crate::sound::busy() == want });
+    assert!(sounding_within(1000, true), "the program's tone never started");
+    process::kill(id).unwrap();
+    assert!(ended_within(id, 1000));
+    assert!(sounding_within(1000, false), "the tone outlived its program");
+}
+
 fn test_kill_wakes_a_sleeping_program() {
     // sleep_ms(60000), then exit: killing it mustn't wait a minute.
     let id = start(&[movz(0, 60000, 0), movz(16, 0, 0), svc(7), EXIT]);
@@ -341,6 +352,7 @@ pub fn run() {
         &test_syscall_buffer_on_untouched_stack,
         &test_kill_ends_a_looping_program,
         &test_kill_wakes_a_sleeping_program,
+        &test_killed_programs_sound_stops,
         &test_programs_run_on_program_cores,
         &test_programs_run_in_parallel,
         &test_wakeups_reach_program_cores_quickly,

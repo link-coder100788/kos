@@ -11,6 +11,8 @@
 pub mod user_mode;
 #[cfg(feature = "test")]
 pub mod net;
+#[cfg(feature = "test")]
+pub mod sound;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::{id_println, println};
@@ -66,6 +68,7 @@ pub fn failed() -> ! {
 pub extern "C" fn test_task() -> ! {
     user_mode::run();
     net::run();
+    sound::run();
     finish()
 }
 

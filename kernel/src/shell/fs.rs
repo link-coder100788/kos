@@ -179,6 +179,7 @@ impl ShellCommand {
                 println!("  open <image.bmp/png/jpeg/heic/mp4/mov>");
                 println!("  k <build|run> <file>");
                 println!("Network: net, ping <host>, dns <host or url>, fetch <url>, browse [url]");
+                println!("Sound: beep, snd <hz> (snd 0 stops), play <notes> (e.g. play T140 O4 C D E F G2)");
                 println!("Assistant: kai <request> (try `kai` alone), kai --debug <request>");
                 println!("Debugging: log [target level], dmesg [count] [text], stats, ps");
                 println!("System: mmu [addr], heap_remain, heap_test, load [seconds]");

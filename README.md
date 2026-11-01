@@ -2,7 +2,7 @@
 
 A hobby operating system for 64-bit ARM (AArch64), written in Rust and run on QEMU's `virt` machine.
 
-It boots on five cores into a graphical desktop with overlapping windows, a real keyboard and mouse, a terminal, networking with HTTPS and a web browser that renders HTML and images, a FAT file system on a virtual disk, C programs, a compiler for its own little language, K, that runs inside the kernel, and K-AI, a built-in assistant powered by a small neural network trained for KOS.
+It boots on five cores into a graphical desktop with overlapping windows, a real keyboard and mouse, a terminal, networking with HTTPS and a web browser that renders HTML and images, a FAT file system on a virtual disk, one-voice sound (tones and tunes, TempleOS style), C programs, a compiler for its own little language, K, that runs inside the kernel, and K-AI, a built-in assistant powered by a small neural network trained for KOS.
 
 ## Quick start
 
@@ -48,6 +48,7 @@ Options are passed as make variables:
 | `FEATURES` | (empty)           | Kernel cargo features: `test` (in-kernel test suite), `restart_secondary` (restart a core that panics). |
 | `DISK`     | `disk.img`        | Disk image to attach.                                                    |
 | `UTC_OFFSET` | this computer's (`date +%z`) | Time zone for the taskbar clock, e.g. `+0100`. The clock chip itself runs in UTC. |
+| `AUDIO`    | `coreaudio` / `pa` | QEMU audio backend for the sound device: your speakers on macOS / Linux. `AUDIO=none` for silence, `AUDIO="wav,path=out.wav"` to record. `make test` always records to `build/test.wav`. |
 
 ## Using KOS
 
@@ -86,12 +87,13 @@ The shell runs on the serial console and in the Terminal window at the same time
 | `fetch <url>` | HTTP GET; print the response |
 | `browse [url]` | Open a Browser window |
 | `kai <request>` | Ask K-AI, e.g. `kai what's running?` (see below) |
+| `beep`, `snd <hz>`, `play <notes>` | Sound: a beep, a steady tone (`snd 0` or `snd off` stops it), a tune (see [Sound](#sound)) |
 | `ps` | Tasks, the core each runs on, their share of its time, which are programs, and how idle each core is |
 | `heap_remain`, `heap_test` | Kernel heap usage / stress test |
 | `mmu [addr]` | Free page frames; how an address translates |
 | `dump` | Print the CPU registers |
 
-Try `run helloc.elf.b64` (prints, then echoes a line you type) or `run ui_demo.elf.b64` (opens a window with buttons).
+Try `run helloc.elf.b64` (prints, then echoes a line you type), `run ui_demo.elf.b64` (opens a window with buttons) or `run sound_demo.elf.b64` (a siren and a tune).
 
 ### K-AI
 
@@ -124,6 +126,29 @@ make kai           # kai-train, then kai-upload
 ### The network
 
 QEMU gives KOS a virtual Ethernet card and routes its traffic through your computer's connection (wifi or wired), so KOS can reach the internet. KOS configures itself with DHCP: it gets `10.0.2.15`, and your computer is reachable from inside KOS as `10.0.2.2`. To serve your own files to the Browser, run a web server on your computer, for example `python3 -m http.server 8000` in a folder, then open `http://10.0.2.2:8000/` in KOS.
+
+### Sound
+
+KOS has one voice, like a PC speaker (or TempleOS's `Snd`): it plays one sound at a time, and starting a new one cuts off whatever was playing. A sound is a steady square-wave tone (`snd 440`, until `snd 0`), a short `beep`, or a tune:
+
+```
+kos:/> play T140 O4 C D E F G2 > C1
+```
+
+Tunes are written in a small music notation, like the old BASIC `PLAY`. Spaces and case don't matter.
+
+| Notation | Meaning |
+|---|---|
+| `C D E F G A B` | A note. `#` or `+` after it makes it sharp, `-` flat (`F#`, `B-`) |
+| a length after a note | `1` whole, `2` half, `4` quarter (the default), `8`, `16`, `32`; a `.` makes it half as long again (`C4.`) |
+| `R` or `P` | A rest, with a length like a note's |
+| `O0`–`O8` | The octave (4 to start, where A is 440 Hz); `<` / `>` go one down / up |
+| `T32`–`T255` | Tempo, in quarter notes a minute (120 to start) |
+| `L1`–`L64` | The default length for notes without one |
+
+Programs get the same with `snd`, `beep` and `play` in C (`sys.h`) and `kernel.snd`, `kernel.beep` and `kernel.play` in K. For a program, `play` and `beep` wait until their sound is over, and anything a program is playing stops when it ends (or crashes, or is killed), so a stuck tone can't outlive it. The desktop plays a beep when a program prints a BEL (`\a`) and a low bonk when a program crashes, but only when nothing else is playing.
+
+Underneath, `kernel/src/drivers/virtio/snd.rs` drives QEMU's virtio-sound device (16-bit, 48 kHz, in 10 ms periods), and the `sound` task (`kernel/src/sound/`) keeps it fed, generating the square wave with a 2 ms fade at each start and stop so notes don't click.
 
 ### The disk
 
@@ -232,7 +257,7 @@ See `userspace/prog/ui_demo.c` for a program with a window.
 
 #### Syscalls
 
-Under the library, a program talks to the kernel with `svc #n`, where `n` picks the syscall. Arguments go in `x0`-`x4`, and syscalls with several jobs (4-7, 12, 13, 15) take a sub-command in `x16`. The result comes back in `x0`: `-1` (`u64::MAX`) means it failed, and sub-command 5 of syscall 13 (`last_error()`) says why. Pointers are checked against the program's own memory, and a bad one fails instead of crashing anything. Strings passed with a length aren't NUL-terminated; the others are. The kernel side is `kernel/src/syscall.rs`.
+Under the library, a program talks to the kernel with `svc #n`, where `n` picks the syscall. Arguments go in `x0`-`x4`, and syscalls with several jobs (4-7, 12, 13, 15, 16) take a sub-command in `x16`. The result comes back in `x0`: `-1` (`u64::MAX`) means it failed, and sub-command 5 of syscall 13 (`last_error()`) says why. Pointers are checked against the program's own memory, and a bad one fails instead of crashing anything. Strings passed with a length aren't NUL-terminated; the others are. The kernel side is `kernel/src/syscall.rs`.
 
 | `svc` | `x16` | Arguments → result | libc |
 |---|---|---|---|
@@ -296,6 +321,11 @@ Under the library, a program talks to the kernel with `svc #n`, where `n` picks 
 | | 2 | key, len, data, len, out → 0 (32-byte HMAC-SHA256) | `hmac_sha256` |
 | | 3 | `aead_t*` → 0 (encrypts in place, writes the tag) | `aes_gcm_seal` |
 | | 4 | `aead_t*` → 0, or -1 if the tag doesn't match (decrypts in place) | `aes_gcm_open` |
+| 16 sound | 0 | hz → 0 (a steady tone until the next sound; 0 is silence) | `snd` |
+| | 1 | → 0, once the beep is over | `beep` |
+| | 2 | notes, len → 0 once the tune is over, or -1 for bad notes | `play` |
+| | 3 | → 0 (stops whatever is playing) | `snd_stop` |
+| | 4 | → 1 if something is playing, else 0 | `snd_busy` |
 
 Calls that copy something out (a file, a listing, a response) return its full length, even when the buffer was smaller, so passing a buffer of 0 bytes asks how big it is. The libc functions do that for you: ask the size, allocate, then copy.
 
@@ -323,9 +353,9 @@ A `.c` file in `userspace/cmd/` is a system command instead: `make disk` puts it
 
 K is a small statically typed language compiled to AArch64 by a compiler built into the kernel (`kernel/src/k/`).
 
-It reads a bit like a stripped-down Rust: a file starts with `module name;`, functions are `fn add(a: u64, b: u64) -> u64 { ... }`, and variables are `let` (immutable) or `mut`, always with a type. The types are the fixed-size integers (`u8`–`u64`, `i8`–`i64`, `usize`, `isize`), `bool`, `char`, string literals, fixed arrays (`u64[4]`) and pointers (`u64 pointer`, with `&x` and `*p`), plus your own `struct`s and `enum`s (matched with `match`). Control flow is `if`/`else`, `while`, `loop`, `break` and `continue`. There's no standard library: after `import kernel;` a program talks to the OS through a handful of built-ins, `kernel.print("...")`, `kernel.write_byte`, `kernel.write_bytes(ptr, len)`, `kernel.read_line`, `kernel.dump()` and `kernel.exit(code)`, which compile to syscalls. The compiler goes lexer → parser → type checker → IR → AArch64 machine code and packs the result into a KBIN file, which `k run` loads into user memory and runs as an ordinary process, just like a C program.
+It reads a bit like a stripped-down Rust: a file starts with `module name;`, functions are `fn add(a: u64, b: u64) -> u64 { ... }`, and variables are `let` (immutable) or `mut`, always with a type. The types are the fixed-size integers (`u8`–`u64`, `i8`–`i64`, `usize`, `isize`), `bool`, `char`, string literals, fixed arrays (`u64[4]`) and pointers (`u64 pointer`, with `&x` and `*p`), plus your own `struct`s and `enum`s (matched with `match`). Control flow is `if`/`else`, `while`, `loop`, `break` and `continue`. There's no standard library: after `import kernel;` a program talks to the OS through a handful of built-ins, `kernel.print("...")`, `kernel.write_byte`, `kernel.write_bytes(ptr, len)`, `kernel.read_line`, `kernel.sleep_ms(ms)`, `kernel.dump()` and `kernel.exit(code)`, plus sound with `kernel.snd(hz)`, `kernel.beep()` and `kernel.play("notes")`, which compile to syscalls. The compiler goes lexer → parser → type checker → IR → AArch64 machine code and packs the result into a KBIN file, which `k run` loads into user memory and runs as an ordinary process, just like a C program.
 
-There are examples in `/k` on the disk (`basic.k`, `h.k`). `k build` writes `out.kbin` to the current folder:
+There are examples in `/k` on the disk (`basic.k`, `h.k`, and `song.k`, which plays a scale and a tune). `k build` writes `out.kbin` to the current folder:
 
 ```
 kos:/> cd k
@@ -363,8 +393,9 @@ kernel/
     scheduler/         tasks, trap frame, wait queues, async executor
     syscall.rs         syscall handlers (svc #N)
     loader/            ELF loading and the program runner task
-    drivers/           UART, display (virtio-gpu or ramfb + fw_cfg), virtio (blk, gpu, input, net), input events, panic screen
+    drivers/           UART, display (virtio-gpu or ramfb + fw_cfg), virtio (blk, gpu, input, net, snd), input events, panic screen
     net/               network task: DHCP, DNS, HTTP client, TLS, ping, TCP + UDP sockets (on smoltcp)
+    sound/             the one-voice sound system: tones, tunes and their notation, the task feeding the sound device
     rand/              random numbers (ChaCha20, seeded by RNDR)
     crypto.rs          hashes, HMAC, AES-GCM for the crypto syscall
     assistant/         K-AI: loading the model, its tools, confirmations

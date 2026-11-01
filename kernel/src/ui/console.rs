@@ -43,6 +43,7 @@ impl Console {
         match byte {
             b'\n' => self.newline(),
             b'\r' => {}
+            0x07 => crate::sound::ui_beep(),
             0x08 => self.col = self.col.saturating_sub(1),
             b'\t' => {
                 for _ in 0..(8 - self.col % 8) {

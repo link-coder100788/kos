@@ -23,7 +23,7 @@
 // last_error() returns.
 //
 // Syscalls: `svc #n`, arguments in x0-x4, a sub-command in x16 for 4-7,
-// 12-13 and 15, the result in x0 (-1 for failure). The README's "Syscalls"
+// 12-13 and 15-16, the result in x0 (-1 for failure). The README's "Syscalls"
 // table has every sub-command and its arguments.
 //
 //   svc  what           libc
@@ -43,6 +43,7 @@
 //   13   processes      spawn, proc_*, last_error
 //   14   system info    uname
 //   15   crypto         sha256, sha512, hmac_sha256, aes_gcm_* (crypto.h)
+//   16   sound          snd, beep, play, snd_stop, snd_busy
 //
 // Each program runs in user mode in its own address space: it sees only
 // its own code, data, heap and stack (up to 8 MiB, growing as it's used), so a
@@ -118,6 +119,31 @@ long unix_time(void);
 
 // How many seconds the local time zone is ahead of UTC.
 long utc_offset(void);
+
+// ---- sound -------------------------------------------------------------------
+// One voice, like a PC speaker: each call replaces whatever was playing,
+// and a program's sound stops when it ends. These return 0, or -1 if
+// there's no sound device (or bad notes; last_error() says what).
+
+// Plays a steady square-wave tone of `hz` until something else plays;
+// snd(0) is silence.
+long snd(uint32_t hz);
+
+// A short beep; returns once it's over.
+long beep(void);
+
+// Plays a tune and returns once it's over (or something else replaced it),
+// e.g. play("T140 O4 C D E8 F#8 G2"):
+// notes C-B (# sharp, - flat) with a length (4 = quarter, 8 = eighth, a `.`
+// for dotted), R for a rest, On/</> for the octave, Tn tempo, Ln default
+// length. The README's Sound section has the details.
+long play(const char* notes);
+
+// Stops whatever is playing.
+long snd_stop(void);
+
+// 1 while something is playing (e.g. a song from play()), else 0.
+int snd_busy(void);
 
 // ---- random numbers ------------------------------------------------------------
 

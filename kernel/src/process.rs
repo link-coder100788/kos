@@ -492,6 +492,7 @@ pub fn reap() {
             }
         }
         crate::net::close_owned_by(process.task);
+        crate::sound::task_ended(process.task);
         log::debug!("reaped '{}' (pid {}): {} KiB of memory, {} windows", process.name, process.pid,
             process.memory.pages.len() * PAGE_SIZE / 1024, process.windows.len());
         mmu::flush_asid(process.asid);

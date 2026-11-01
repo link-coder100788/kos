@@ -42,6 +42,9 @@ enum UartCommand<'a> {
     Kai(&'a str),
     Time,
     Kill(&'a str),
+    Beep,
+    Snd(&'a str),
+    Play(&'a str),
 }
 
 impl<'a> UartCommand<'a> {
@@ -63,6 +66,12 @@ impl<'a> UartCommand<'a> {
         }
         if s == "kill" || s.starts_with("kill ") {
             return Some(UartCommand::Kill(s[4..].trim()));
+        }
+        if s == "snd" || s.starts_with("snd ") {
+            return Some(UartCommand::Snd(s[3..].trim()));
+        }
+        if s == "play" || s.starts_with("play ") {
+            return Some(UartCommand::Play(s[4..].trim()));
         }
         if let Some(name) = s.strip_prefix("dns ") {
             return Some(UartCommand::Dns(name.trim()));
@@ -103,6 +112,7 @@ impl<'a> UartCommand<'a> {
             "ps" => Some(UartCommand::Tasks),
             "stats" => Some(UartCommand::Stats),
             "time" => Some(UartCommand::Time),
+            "beep" => Some(UartCommand::Beep),
             _ => Some(UartCommand::ShellCommand(fs::ShellCommand::parse(s).unwrap_or(fs::ShellCommand::Help))),
         }
     }
@@ -195,6 +205,30 @@ impl<'a> UartCommand<'a> {
                 }
                 println!("gateway  {:?}", st.gateway);
                 println!("dns      {:?}", st.dns);
+            }
+            UartCommand::Beep => {
+                if let Err(e) = crate::sound::beep().map(drop) {
+                    println!("beep: {}", e);
+                }
+            }
+            UartCommand::Snd(arg) => {
+                let hz = match *arg {
+                    "off" | "stop" => Some(0),
+                    a => a.parse::<u32>().ok(),
+                };
+                match hz {
+                    Some(hz) => if let Err(e) = crate::sound::snd(hz) {
+                        println!("snd: {}", e);
+                    },
+                    None => println!("snd: usage: snd <hz> (snd 0 or snd off for silence)"),
+                }
+            }
+            UartCommand::Play(notes) => {
+                if notes.is_empty() {
+                    println!("play: usage: play <notes>, e.g. play T140 O4 C D E F G2 (see the README's Sound section)");
+                } else if let Err(e) = crate::sound::play(notes).map(drop) {
+                    println!("play: {}", e);
+                }
             }
             UartCommand::Ping(host) => match crate::net::ping(host).wait() {
                 Ok(ms) => println!("reply from {}: time={} ms", host, ms),

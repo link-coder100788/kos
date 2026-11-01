@@ -33,6 +33,7 @@ mod rand;
 mod scheduler;
 mod sections;
 mod shell;
+mod sound;
 mod stats;
 mod std;
 mod syscall;

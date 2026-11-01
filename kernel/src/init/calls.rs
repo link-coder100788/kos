@@ -132,6 +132,11 @@ fn input_devices() {
     crate::drivers::virtio::input::init();
 }
 
+#[initcall(level = InitLevel::middle, priority = 5)]
+fn sound() {
+    crate::sound::init();
+}
+
 #[initcall(level = InitLevel::middle, priority = 4)]
 fn test_if_enabled() {
     if cfg!(feature = "test") {

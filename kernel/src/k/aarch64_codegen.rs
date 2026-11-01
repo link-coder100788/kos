@@ -164,6 +164,7 @@ fn op_len(op: &Ir) -> usize {
         Ir::BitNot => 3,
         Ir::Call(_, argc) => argc + 2,
         Ir::KernelCall(_, argc) => argc + 2,
+        Ir::KernelSubCall(_, _, argc) => argc + 3,
         Ir::Ret(has_value) => (if *has_value { 1 } else { 0 }) + 3,
         Ir::Label(_) => 0,
         Ir::Jump(_) => 1,
@@ -415,6 +416,14 @@ fn emit_op(
             code.push(e::svc(*num as u16));
             code.push(e::push_x(0));
         }
+        Ir::KernelSubCall(num, sub, argc) => {
+            for i in (0..*argc).rev() {
+                code.push(e::pop_x(i as u32));
+            }
+            code.push(e::movz(16, *sub as u16, 0));
+            code.push(e::svc(*num as u16));
+            code.push(e::push_x(0));
+        }
         Ir::Ret(has_value) => {
             if *has_value {
                 code.push(e::pop_x(0));
@@ -514,6 +523,7 @@ pub mod tests {
         assert_eq!(op_len(&Ir::Ret(true)), 4);
         assert_eq!(op_len(&Ir::Call("f".into(), 2)), 4); // argc + 2
         assert_eq!(op_len(&Ir::KernelCall(0, 2)), 4);    // argc + 2 (no x8 load anymore)
+        assert_eq!(op_len(&Ir::KernelSubCall(16, 0, 1)), 4); // argc + 3 (x16 load)
         assert_eq!(op_len(&Ir::BinOp(BinOp::Add)), 4);   // 2 pops + 1 op + 1 push
         assert_eq!(op_len(&Ir::BinOp(BinOp::And)), 8);   // 2 pops + 5 op + 1 push
     }
