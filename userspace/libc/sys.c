@@ -340,6 +340,10 @@ int snd_busy(void) {
     return (int)SVC(0x10, 4, 0, 0, 0, 0);
 }
 
+long play_file(const char* path) {
+    return (long)SVC(0x10, 5, path, c_strlen(path), 0, 0);
+}
+
 // ---- random numbers ----------------------------------------------------------------
 
 long random_bytes(void* buf, size_t len) {

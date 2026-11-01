@@ -77,6 +77,7 @@ pub const KERNEL_SUBCALLS: &[(&str, u8, u8)] = &[
     ("snd", 16, 0),     // (hz: u64): a steady tone, 0 = silence
     ("beep", 16, 1),    // waits until it's over
     ("play", 16, 2),    // ("notes"): string literal only, expanded to (ptr, len) like print; waits until it's over
+    ("play_file", 16, 5), // ("file.wav"): the same
 ];
 
 struct FnCtx<'a> {
@@ -499,9 +500,9 @@ fn lower_expr(e: &Expr, ctx: &mut FnCtx, out: &mut Vec<Ir>) {
                     _ => panic!("kernel.print() only supports string literal arguments in this version — use kernel.write_bytes(ptr, len) for anything else"),
                 }
             } else if let Some(&(_, num, sub)) = KERNEL_SUBCALLS.iter().find(|(n, _, _)| *n == name) {
-                if name == "play" {
+                if name == "play" || name == "play_file" {
                     let Expr::StrLit(s) = &args[0] else {
-                        panic!("kernel.play() only supports a string literal");
+                        panic!("kernel.{}() only supports a string literal", name);
                     };
                     let label = ctx.intern_string(s);
                     out.push(Ir::PushGlobalAddr(label));

@@ -43,7 +43,7 @@
 //   13   processes      spawn, proc_*, last_error
 //   14   system info    uname
 //   15   crypto         sha256, sha512, hmac_sha256, aes_gcm_* (crypto.h)
-//   16   sound          snd, beep, play, snd_stop, snd_busy
+//   16   sound          snd, beep, play, play_file, snd_stop, snd_busy
 //
 // Each program runs in user mode in its own address space: it sees only
 // its own code, data, heap and stack (up to 8 MiB, growing as it's used), so a
@@ -138,6 +138,10 @@ long beep(void);
 // for dotted), R for a rest, On/</> for the octave, Tn tempo, Ln default
 // length. The README's Sound section has the details.
 long play(const char* notes);
+
+// Plays a WAV file (uncompressed PCM, up to 3 minutes) and returns once
+// it's over (or something else replaced it).
+long play_file(const char* path);
 
 // Stops whatever is playing.
 long snd_stop(void);

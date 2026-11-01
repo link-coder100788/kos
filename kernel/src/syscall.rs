@@ -855,8 +855,9 @@ mod sound {
     pub const PLAY: u64 = 2;  // (notes, len) -> 0, once the song is over
     pub const STOP: u64 = 3;  // -> 0
     pub const BUSY: u64 = 4;  // -> 1 if something is playing, else 0
+    pub const PLAY_FILE: u64 = 5; // (path, len) -> 0, once the WAV file is over
 
-    const_unique!(SND, BEEP, PLAY, STOP, BUSY);
+    const_unique!(SND, BEEP, PLAY, STOP, BUSY, PLAY_FILE);
 }
 
 #[syscall(16)]
@@ -875,6 +876,10 @@ pub fn syscall_sound(frame: &mut SyscallContext) {
             None => Err("bad notes".to_string()),
         },
         sound::STOP => crate::sound::stop(),
+        sound::PLAY_FILE => match user_str(frame, frame[0], frame[1]) {
+            Some(path) => crate::sound::play_file(&current_cwd(), path).map(wait),
+            None => Err("bad path".to_string()),
+        },
         sound::BUSY => {
             frame[0] = crate::sound::busy() as u64;
             return;

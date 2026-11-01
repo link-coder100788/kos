@@ -1,6 +1,7 @@
 //! The sound system: one voice, so one sound at a time, like a PC speaker
-//! (or TempleOS's `Snd`). A square-wave tone (`snd`), a short beep or a
-//! song (`play`); starting any of them replaces whatever was playing.
+//! (or TempleOS's `Snd`). A square-wave tone (`snd`), a short beep, a
+//! song (`play`) or a WAV file (`play_file`); starting any of them
+//! replaces whatever was playing.
 //!
 //! The `sound` task keeps the device's stream fed with periods it fills
 //! from `VOICE`, silence included. Songs advance by samples as they're
@@ -19,8 +20,10 @@
 //! TempleOS's (see `syscall_sound`); the kernel's don't. A program's
 //! sound stops when it ends.
 
+pub mod wav;
+
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
@@ -39,6 +42,8 @@ enum Sound {
     Silent,
     Tone(u32),
     Song { notes: Vec<Note>, at: usize, left: u32 },
+    /// Mono samples at the device's rate (see `wav`).
+    Samples { data: Vec<i16>, at: usize },
 }
 
 struct Voice {
@@ -117,6 +122,43 @@ pub fn beep() -> Result<u64, String> {
 pub fn play(notation: &str) -> Result<u64, String> {
     let notes = parse(notation)?;
     set(song(notes))
+}
+
+/// Plays mono samples at the device's rate, in the background: returns
+/// its id for `finished`.
+pub fn play_samples(data: Vec<i16>) -> Result<u64, String> {
+    set(if data.is_empty() { Sound::Silent } else { Sound::Samples { data, at: 0 } })
+}
+
+/// The device's sample rate.
+pub fn rate() -> u32 {
+    snd::with(|dev| dev.rate).unwrap_or(48000)
+}
+
+/// Plays a WAV file's contents, in the background.
+pub fn play_wav(bytes: &[u8]) -> Result<u64, String> {
+    if !available() {
+        return Err(String::from("no sound device"));
+    }
+    play_samples(wav::decode(bytes, rate())?)
+}
+
+/// Plays the WAV file at `path` (relative to `cwd`), in the background.
+pub fn play_file(cwd: &str, path: &str) -> Result<u64, String> {
+    use crate::filesys::fs_ipc::{fs_call, FsRequest, FsResponse};
+    if !available() {
+        return Err(String::from("no sound device"));
+    }
+    match fs_call(FsRequest::Read { cwd: cwd.to_string(), path: path.to_string() }) {
+        FsResponse::Data(bytes) => play_wav(&bytes),
+        FsResponse::Err(e) => Err(format!("{}: {:?}", path, e)),
+        _ => Err(format!("{}: can't read it", path)),
+    }
+}
+
+/// Whether `arg` names a WAV file rather than being notes.
+pub fn is_wav_path(arg: &str) -> bool {
+    arg.len() > 4 && arg[arg.len() - 4..].eq_ignore_ascii_case(".wav") && !arg.contains(' ')
 }
 
 /// Whether sound `id` is over: it ended, or something replaced it.
@@ -248,61 +290,84 @@ pub fn parse(notation: &str) -> Result<Vec<Note>, String> {
 
 // ---- the sound task --------------------------------------------------------------
 
+/// What the voice wants for the next sample.
+#[derive(Clone, Copy)]
+enum Out {
+    Quiet,
+    Tone(u32),
+    Sample(i16),
+}
+
 /// The synthesizer's state between samples.
 struct Synth {
     rate: u32,
     phase: u32,
-    /// The frequency playing (kept while fading out).
-    hz: u32,
+    /// What last sounded (kept while fading out): a tone or a sample.
+    last: Out,
     /// 0..=RAMP: how far faded in.
     gain: i32,
 }
 
 impl Synth {
-    /// The next sample, heading for `target` Hz (0 = silence).
-    fn next(&mut self, target: u32) -> i16 {
-        if target != 0 {
-            // A new note keeps the phase, so changing pitch doesn't click.
-            self.hz = target;
-            self.gain = (self.gain + 1).min(RAMP);
-        } else {
+    /// The next sample: `out`, faded in from silence and back out to it.
+    fn next(&mut self, out: Out) -> i16 {
+        if let Out::Quiet = out {
             self.gain = (self.gain - 1).max(0);
+        } else {
+            // A new note keeps the phase, so changing pitch doesn't click.
+            self.last = out;
+            self.gain = (self.gain + 1).min(RAMP);
         }
         if self.gain == 0 {
             return 0;
         }
-        // A full turn of the phase is one cycle.
-        self.phase = self.phase.wrapping_add((((self.hz as u64) << 32) / self.rate as u64) as u32);
-        let level = AMPLITUDE * self.gain / RAMP;
-        (if self.phase < 1 << 31 { level } else { -level }) as i16
+        match self.last {
+            Out::Tone(hz) => {
+                // A full turn of the phase is one cycle.
+                self.phase = self.phase.wrapping_add((((hz as u64) << 32) / self.rate as u64) as u32);
+                let level = AMPLITUDE * self.gain / RAMP;
+                (if self.phase < 1 << 31 { level } else { -level }) as i16
+            }
+            Out::Sample(s) => (s as i32 * self.gain / RAMP) as i16,
+            Out::Quiet => 0,
+        }
     }
 }
 
 impl Voice {
-    /// What should be sounding for the next sample, moving songs along.
-    fn advance(&mut self, rate: u32) -> u32 {
-        let Sound::Song { notes, at, left } = &mut self.sound else {
-            return match self.sound { Sound::Tone(hz) => hz, _ => 0 };
-        };
+    /// What should be sounding for the next sample, moving sounds along.
+    fn advance(&mut self, rate: u32) -> Out {
         let samples = |note: &Note| (note.ms as u64 * rate as u64 / 1000).max(1) as u32;
-        if *left == 0 {
-            if *at == notes.len() {
-                self.finish();
-                return 0;
+        match &mut self.sound {
+            Sound::Silent => Out::Quiet,
+            Sound::Tone(hz) => Out::Tone(*hz),
+            Sound::Samples { data, at } => match data.get(*at) {
+                Some(&sample) => {
+                    *at += 1;
+                    Out::Sample(sample)
+                }
+                None => self.finish(),
+            },
+            Sound::Song { notes, at, left } => {
+                if *left == 0 {
+                    let Some(next) = notes.get(*at) else { return self.finish() };
+                    *left = samples(next);
+                    *at += 1;
+                }
+                let note = notes[*at - 1];
+                *left -= 1;
+                // The last eighth of each note is quiet, so repeated notes
+                // come out as separate notes.
+                if *left < samples(&note) / 8 || note.hz == 0 { Out::Quiet } else { Out::Tone(note.hz) }
             }
-            *left = samples(&notes[*at]);
-            *at += 1;
         }
-        let note = notes[*at - 1];
-        *left -= 1;
-        // The last eighth of each note is quiet, so repeated notes come
-        // out as separate notes.
-        if *left < samples(&note) / 8 { 0 } else { note.hz }
     }
 
-    fn finish(&mut self) {
+    /// Ends the sound playing.
+    fn finish(&mut self) -> Out {
         self.sound = Sound::Silent;
         self.owner = None;
+        Out::Quiet
     }
 }
 
@@ -324,7 +389,7 @@ fn take_ui_request() {
 
 extern "C" fn sound_task() -> ! {
     let rate = snd::with(|s| s.rate).unwrap_or(48000);
-    let mut synth = Synth { rate, phase: 0, hz: 0, gain: 0 };
+    let mut synth = Synth { rate, phase: 0, last: Out::Quiet, gain: 0 };
     loop {
         take_ui_request();
         snd::with(|dev| {

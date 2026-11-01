@@ -225,8 +225,15 @@ impl<'a> UartCommand<'a> {
             }
             UartCommand::Play(notes) => {
                 if notes.is_empty() {
-                    println!("play: usage: play <notes>, e.g. play T140 O4 C D E F G2 (see the README's Sound section)");
-                } else if let Err(e) = crate::sound::play(notes).map(drop) {
+                    println!("play: usage: play <notes> or play <file.wav>, e.g. play T140 O4 C D E F G2 (see the README's Sound section)");
+                    return;
+                }
+                let played = if crate::sound::is_wav_path(notes) {
+                    crate::sound::play_file(&fs::current_cwd(), notes)
+                } else {
+                    crate::sound::play(notes)
+                };
+                if let Err(e) = played.map(drop) {
                     println!("play: {}", e);
                 }
             }

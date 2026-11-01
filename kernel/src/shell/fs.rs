@@ -176,10 +176,10 @@ impl ShellCommand {
                 println!("  kill <id>          end a program (ids are in ps and the Task Manager)");
                 println!("  decode <path> <path>");
                 println!("  encode <path> <path>");
-                println!("  open <image.bmp/png/jpeg/heic/mp4/mov>");
+                println!("  open <image.bmp/png/jpeg/heic/mp4/mov, or sound.wav>");
                 println!("  k <build|run> <file>");
                 println!("Network: net, ping <host>, dns <host or url>, fetch <url>, browse [url]");
-                println!("Sound: beep, snd <hz> (snd 0 stops), play <notes> (e.g. play T140 O4 C D E F G2)");
+                println!("Sound: beep, snd <hz> (snd 0 stops), play <notes or file.wav> (e.g. play T140 O4 C D E F G2)");
                 println!("Assistant: kai <request> (try `kai` alone), kai --debug <request>");
                 println!("Debugging: log [target level], dmesg [count] [text], stats, ps");
                 println!("System: mmu [addr], heap_remain, heap_test, load [seconds]");
@@ -335,6 +335,11 @@ impl ShellCommand {
                                 crate::ui::window::open_app(alloc::boxed::Box::new(player));
                             }
                             Err(e) => println!("open: {}", e),
+                        }
+                    }
+                    "wav" | "WAV" => {
+                        if let Err(e) = crate::sound::play_file(&cwd, path) {
+                            println!("open: {}", e);
                         }
                     }
                     _ => { println!("open: unknown extension: {}", ext); }

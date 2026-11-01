@@ -38,7 +38,7 @@ pub struct Sema {
 // expands to `write_bytes(ptr, compile_time_known_len)` (see ir.rs).
 const KERNEL_FNS: &[(&str, usize)] = &[
     ("exit", 1), ("write_byte", 1), ("write_bytes", 2), ("read_line", 2), ("print", 1), ("dump", 0),
-    ("sleep_ms", 1), ("snd", 1), ("beep", 0), ("play", 1),
+    ("sleep_ms", 1), ("snd", 1), ("beep", 0), ("play", 1), ("play_file", 1),
 ];
 
 pub fn field_size(sema: &Sema, ty: &Type) -> u64 {
@@ -237,8 +237,8 @@ fn check_expr(sema: &Sema, e: &Expr, scope: &Scope) -> Result<(), String> {
             if name == "print" && !matches!(args[0], Expr::StrLit(_)) {
                 return Err(String::from("kernel.print() only supports string literal arguments; use kernel.write_bytes(ptr, len) for anything else"));
             }
-            if name == "play" && !matches!(args[0], Expr::StrLit(_)) {
-                return Err(String::from("kernel.play() only supports a string literal, e.g. kernel.play(\"C D E\")"));
+            if (name == "play" || name == "play_file") && !matches!(args[0], Expr::StrLit(_)) {
+                return Err(format!("kernel.{}() only supports a string literal, e.g. kernel.{}(\"...\")", name, name));
             }
             for a in args { check_expr(sema, a, scope)?; }
             Ok(())

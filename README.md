@@ -2,7 +2,7 @@
 
 A hobby operating system for 64-bit ARM (AArch64), written in Rust and run on QEMU's `virt` machine.
 
-It boots on five cores into a graphical desktop with overlapping windows, a real keyboard and mouse, a terminal, networking with HTTPS and a web browser that renders HTML and images, a FAT file system on a virtual disk, one-voice sound (tones and tunes, TempleOS style), C programs, a compiler for its own little language, K, that runs inside the kernel, and K-AI, a built-in assistant powered by a small neural network trained for KOS.
+It boots on five cores into a graphical desktop with overlapping windows, a real keyboard and mouse, a terminal, networking with HTTPS and a web browser that renders HTML and images, a FAT file system on a virtual disk, one-voice sound (tones, tunes and WAV files, TempleOS style), C programs, a compiler for its own little language, K, that runs inside the kernel, and K-AI, a built-in assistant powered by a small neural network trained for KOS.
 
 ## Quick start
 
@@ -79,7 +79,7 @@ The shell runs on the serial console and in the Terminal window at the same time
 | `run <name>.elf.b64` | Run a program; the shell waits until it ends, and it gets the console. Ctrl+C ends it |
 | `bg <name>.elf.b64` | Run a program in the background: no input, output thrown away |
 | `kill <id>` | End a program (ids are in `ps` and the Task Manager) |
-| `open <image>` | Show a PNG, JPEG or BMP image in a window |
+| `open <file>` | Show a PNG, JPEG or BMP image in a window, play an MP4 video, or play a WAV sound |
 | `k build <file.k>`, `k run out.kbin` | Compile and run a K program |
 | `net` | Network address, gateway and DNS server |
 | `ping <host>` | Send one ICMP echo |
@@ -87,7 +87,7 @@ The shell runs on the serial console and in the Terminal window at the same time
 | `fetch <url>` | HTTP GET; print the response |
 | `browse [url]` | Open a Browser window |
 | `kai <request>` | Ask K-AI, e.g. `kai what's running?` (see below) |
-| `beep`, `snd <hz>`, `play <notes>` | Sound: a beep, a steady tone (`snd 0` or `snd off` stops it), a tune (see [Sound](#sound)) |
+| `beep`, `snd <hz>`, `play <notes or file.wav>` | Sound: a beep, a steady tone (`snd 0` or `snd off` stops it), a tune or a WAV file (see [Sound](#sound)) |
 | `ps` | Tasks, the core each runs on, their share of its time, which are programs, and how idle each core is |
 | `heap_remain`, `heap_test` | Kernel heap usage / stress test |
 | `mmu [addr]` | Free page frames; how an address translates |
@@ -129,7 +129,7 @@ QEMU gives KOS a virtual Ethernet card and routes its traffic through your compu
 
 ### Sound
 
-KOS has one voice, like a PC speaker (or TempleOS's `Snd`): it plays one sound at a time, and starting a new one cuts off whatever was playing. A sound is a steady square-wave tone (`snd 440`, until `snd 0`), a short `beep`, or a tune:
+KOS has one voice, like a PC speaker (or TempleOS's `Snd`): it plays one sound at a time, and starting a new one cuts off whatever was playing. A sound is a steady square-wave tone (`snd 440`, until `snd 0`), a short `beep`, a WAV file (`play sounds/chime.wav`, or `open` it), or a tune:
 
 ```
 kos:/> play T140 O4 C D E F G2 > C1
@@ -146,7 +146,9 @@ Tunes are written in a small music notation, like the old BASIC `PLAY`. Spaces a
 | `T32`–`T255` | Tempo, in quarter notes a minute (120 to start) |
 | `L1`–`L64` | The default length for notes without one |
 
-Programs get the same with `snd`, `beep` and `play` in C (`sys.h`) and `kernel.snd`, `kernel.beep` and `kernel.play` in K. For a program, `play` and `beep` wait until their sound is over, and anything a program is playing stops when it ends (or crashes, or is killed), so a stuck tone can't outlive it. The desktop plays a beep when a program prints a BEL (`\a`) and a low bonk when a program crashes, but only when nothing else is playing.
+WAV files can be uncompressed PCM at 8, 16 or 24 bits, mono, stereo or more channels, at any rate from 8 to 192 kHz, up to three minutes long. They're mixed down to mono and converted to 48 kHz when they start. Compressed WAVs (ADPCM, float) are refused with a message saying so. `/sounds/chime.wav` on the disk is a short chime to try.
+
+Programs get the same with `snd`, `beep`, `play` and `play_file` in C (`sys.h`) and `kernel.snd`, `kernel.beep`, `kernel.play` and `kernel.play_file` in K. For a program, `play`, `play_file` and `beep` wait until their sound is over, and anything a program is playing stops when it ends (or crashes, or is killed), so a stuck tone can't outlive it. The desktop plays a beep when a program prints a BEL (`\a`) and a low bonk when a program crashes, but only when nothing else is playing.
 
 Underneath, `kernel/src/drivers/virtio/snd.rs` drives QEMU's virtio-sound device (16-bit, 48 kHz, in 10 ms periods), and the `sound` task (`kernel/src/sound/`) keeps it fed, generating the square wave with a 2 ms fade at each start and stop so notes don't click.
 
@@ -154,7 +156,7 @@ Underneath, `kernel/src/drivers/virtio/snd.rs` drives QEMU's virtio-sound device
 
 `disk.img` is a FAT image attached as a virtio-blk device. `make disk` builds it with `tools/mkdisk` from:
 
-- everything in `disk/` (K sources in `k/`, images in `images/`, sample files);
+- everything in `disk/` (K sources in `k/`, sounds in `sounds/`, images in `images/`, sample files);
 - every program in `userspace/prog/`, as `<name>.elf.b64`; and
 - every system command in `userspace/cmd/`, as `bin/<name>.elf.b64`.
 
@@ -326,6 +328,7 @@ Under the library, a program talks to the kernel with `svc #n`, where `n` picks 
 | | 2 | notes, len → 0 once the tune is over, or -1 for bad notes | `play` |
 | | 3 | → 0 (stops whatever is playing) | `snd_stop` |
 | | 4 | → 1 if something is playing, else 0 | `snd_busy` |
+| | 5 | path, len → 0 once the WAV file is over, or -1 (`last_error` says why) | `play_file` |
 
 Calls that copy something out (a file, a listing, a response) return its full length, even when the buffer was smaller, so passing a buffer of 0 bytes asks how big it is. The libc functions do that for you: ask the size, allocate, then copy.
 
@@ -353,7 +356,7 @@ A `.c` file in `userspace/cmd/` is a system command instead: `make disk` puts it
 
 K is a small statically typed language compiled to AArch64 by a compiler built into the kernel (`kernel/src/k/`).
 
-It reads a bit like a stripped-down Rust: a file starts with `module name;`, functions are `fn add(a: u64, b: u64) -> u64 { ... }`, and variables are `let` (immutable) or `mut`, always with a type. The types are the fixed-size integers (`u8`–`u64`, `i8`–`i64`, `usize`, `isize`), `bool`, `char`, string literals, fixed arrays (`u64[4]`) and pointers (`u64 pointer`, with `&x` and `*p`), plus your own `struct`s and `enum`s (matched with `match`). Control flow is `if`/`else`, `while`, `loop`, `break` and `continue`. There's no standard library: after `import kernel;` a program talks to the OS through a handful of built-ins, `kernel.print("...")`, `kernel.write_byte`, `kernel.write_bytes(ptr, len)`, `kernel.read_line`, `kernel.sleep_ms(ms)`, `kernel.dump()` and `kernel.exit(code)`, plus sound with `kernel.snd(hz)`, `kernel.beep()` and `kernel.play("notes")`, which compile to syscalls. The compiler goes lexer → parser → type checker → IR → AArch64 machine code and packs the result into a KBIN file, which `k run` loads into user memory and runs as an ordinary process, just like a C program.
+It reads a bit like a stripped-down Rust: a file starts with `module name;`, functions are `fn add(a: u64, b: u64) -> u64 { ... }`, and variables are `let` (immutable) or `mut`, always with a type. The types are the fixed-size integers (`u8`–`u64`, `i8`–`i64`, `usize`, `isize`), `bool`, `char`, string literals, fixed arrays (`u64[4]`) and pointers (`u64 pointer`, with `&x` and `*p`), plus your own `struct`s and `enum`s (matched with `match`). Control flow is `if`/`else`, `while`, `loop`, `break` and `continue`. There's no standard library: after `import kernel;` a program talks to the OS through a handful of built-ins, `kernel.print("...")`, `kernel.write_byte`, `kernel.write_bytes(ptr, len)`, `kernel.read_line`, `kernel.sleep_ms(ms)`, `kernel.dump()` and `kernel.exit(code)`, plus sound with `kernel.snd(hz)`, `kernel.beep()`, `kernel.play("notes")` and `kernel.play_file("file.wav")`, which compile to syscalls. The compiler goes lexer → parser → type checker → IR → AArch64 machine code and packs the result into a KBIN file, which `k run` loads into user memory and runs as an ordinary process, just like a C program.
 
 There are examples in `/k` on the disk (`basic.k`, `h.k`, and `song.k`, which plays a scale and a tune). `k build` writes `out.kbin` to the current folder:
 
@@ -395,7 +398,7 @@ kernel/
     loader/            ELF loading and the program runner task
     drivers/           UART, display (virtio-gpu or ramfb + fw_cfg), virtio (blk, gpu, input, net, snd), input events, panic screen
     net/               network task: DHCP, DNS, HTTP client, TLS, ping, TCP + UDP sockets (on smoltcp)
-    sound/             the one-voice sound system: tones, tunes and their notation, the task feeding the sound device
+    sound/             the one-voice sound system: tones, tunes and their notation, WAV decoding (wav.rs), the task feeding the sound device
     rand/              random numbers (ChaCha20, seeded by RNDR)
     crypto.rs          hashes, HMAC, AES-GCM for the crypto syscall
     assistant/         K-AI: loading the model, its tools, confirmations

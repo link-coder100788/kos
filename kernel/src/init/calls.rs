@@ -166,6 +166,8 @@ fn test_if_enabled() {
         #[cfg(feature = "test")]
         crate::crypto::tests::run();
         #[cfg(feature = "test")]
+        crate::sound::wav::tests::run();
+        #[cfg(feature = "test")]
         crate::test::run_all(&[&crate::test::heap_stress_test, &crate::test::heap_grows_and_shrinks_test]);
         // The rest need the scheduler; this task runs them, then powers off.
         #[cfg(feature = "test")]
