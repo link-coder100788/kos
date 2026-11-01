@@ -1,0 +1,8 @@
+[package]
+name = "kai"
+version = "0.1.0"
+edition = "2024"
+description = "K-AI, KOS's built-in assistant: tokenizer and model inference (no_std)"
+
+[dependencies]
+libm = "0.2.16"

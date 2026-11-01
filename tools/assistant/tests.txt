@@ -1,0 +1,178 @@
+help | what can you do
+help | help me
+help | help pls
+
+list_tasks | whats running
+list_tasks | everything running
+list_tasks | processes
+
+memory_status | memory stats
+memory_status | mem stats
+memory_status | current mem
+
+uptime | uptime
+uptime | awake time
+uptime | alive time
+
+network_status | net status
+network_status | net stats
+network_status | wifi stats
+
+ping | ping <host>
+ping | net ping <host>
+
+open_url | open <url>
+open_url | search <url>
+
+list_files | list <path>
+list_files | whats in <path>
+
+unknown | whats the capital of france
+unknown | whats the weather
+unknown | how are you
+# ---------------------------------------------------------------------------
+# More tests, written by Claude in a different style from the training
+# templates: chattier, slangier, typos and odd word order. Never trained on.
+# ---------------------------------------------------------------------------
+
+help | what are you able to help with
+help | im lost, what do i type
+help | explain how this assistant works
+help | can you give me a list of things you understand
+help | kai what are you capable of
+help | how am i supposed to talk to you
+help | hlep
+help | show me some example questions
+help | what do you support
+help | 
+
+list_tasks | which tasks exist right now
+list_tasks | show me all the tasks the kernel has
+list_tasks | something is slow, which task is busy
+list_tasks | what is kos doing at the moment
+list_tasks | list everything thats running please
+list_tasks | task list pls
+list_tasks | wats runing
+list_tasks | whos using all the cpu
+list_tasks | any tasks stuck
+list_tasks | display the schedulers tasks
+
+memory_status | how much ram have i got left
+memory_status | is the heap getting full
+memory_status | memory check
+memory_status | how much free memory is there right now
+memory_status | are we leaking memory
+memory_status | whats the ram situation
+memory_status | memroy usage
+memory_status | how big is the heap
+memory_status | tell me how much memory is in use
+memory_status | ram
+
+uptime | how long has this thing been on
+uptime | how long ago did kos boot up
+uptime | time since startup please
+uptime | when was the last boot
+uptime | how many minutes have you been running
+uptime | uptiem
+uptime | been on long
+uptime | for how long have you been up
+uptime | system uptime
+uptime | how old is this session
+
+network_status | do i have internet
+network_status | what ip did dhcp give me
+network_status | is wifi working
+network_status | show me the gateway and dns
+network_status | am i online right now
+network_status | network config pls
+network_status | netowrk status
+network_status | is networking up
+network_status | whats my address on the network
+network_status | did dhcp work
+
+ping | is <host> reachable from here
+ping | can kos talk to <host>
+ping | ping <host> real quick
+ping | check whether <host> is responding
+ping | is <host> down or is it me
+ping | latency to <host>
+ping | pnig <host>
+ping | does <host> answer pings
+ping | test <host>
+ping | try to reach <host>
+
+open_url | open <url> in the browser
+open_url | take me to <url>
+open_url | i want to read <url>
+open_url | can you pull up <url> for me
+open_url | browse to <url>
+open_url | go to <url>
+open_url | load up <url> please
+open_url | show me the <url> website
+open_url | opne <url>
+open_url | visit <url>
+
+list_files | what files do i have in <path>
+list_files | show me whats inside <path>
+list_files | list everything in <path>
+list_files | ls <path>
+list_files | dir <path>
+list_files | whats in this folder
+list_files | which files are there
+list_files | contents of <path>
+list_files | show files in <path> please
+list_files | lsit <path>
+
+delete_file | delete [path: /files/old/notes.txt]
+unknown | make a new folder called notes
+unknown | rename this file
+unknown | whats 12 times 12
+unknown | who won the world cup
+unknown | write me a story about a dragon
+unknown | shut down the computer
+unknown | play a song
+unknown | good morning kai
+unknown | youre awesome
+unknown | how do i make pancakes
+unknown | what language are you written in
+unknown | close the terminal window
+unknown | set a timer for 5 minutes
+unknown | xyzzy
+
+# time
+time | what time is it
+time | whats the date
+time | what day is it today
+time | time
+time | what year is it
+time | tell me the time pls
+time | is it evening yet
+time | current date and time
+time | wat time is it
+time | do u know what day it is
+
+# delete_file is dangerous: K-AI always asks before deleting.
+delete_file | rm <path>
+delete_file | can you delete <path> for me
+delete_file | get rid of <path>
+delete_file | i dont need <path> anymore, remove it
+delete_file | erase the file <path>
+delete_file | trash <path>
+delete_file | delte <path>
+delete_file | remove that file
+
+diagnose | what went wrong
+diagnose | something broke, what was it
+diagnose | why didnt that work
+diagnose | were there errors since boot
+diagnose | any warnings in the log
+diagnose | summarise dmesg for me
+diagnose | wat went wrong
+diagnose | did anything fail just now
+diagnose | why is <topic> broken
+diagnose | <topic> stopped working, why
+diagnose | whats wrong with <topic>
+diagnose | troubleshoot <topic> please
+diagnose | any errors from <topic>
+diagnose | why does [topic: https] keep failing
+diagnose | [topic: the network] isnt working

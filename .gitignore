@@ -1,0 +1,12 @@
+/target
+/build
+/disk.img
+.DS_Store
+disk/images/
+
+# disk images anywhere (they capture host files + macOS metadata)
+*.img
+# macOS AppleDouble/xattr files
+._*
+# personal media for the local disk image
+disk/files/files2/

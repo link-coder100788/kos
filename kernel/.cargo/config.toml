@@ -1,0 +1,7 @@
+[build]
+target = "aarch64-unknown-none"
+
+[target.aarch64-unknown-none]
+# Frame pointers make every stack walkable: by lldb, and by tools/lldb/kos.py
+# for tasks that aren't running.
+rustflags = ["-C", "relocation-model=static", "-C", "force-frame-pointers=yes"]

@@ -1,0 +1,23 @@
+[workspace]
+resolver = "3"
+members = [
+    "kernel",
+    "kernel/crates/kos-derive",
+    "kernel/crates/lighthouse",
+    "kernel/crates/kai",
+    "bootloader",
+    "tools/mkdisk",
+    "tools/kos-cc",
+]
+
+# rust_h264 with a fix for a no_std memory leak (see its src/once.rs).
+# embedded-tls with room for bigger certificates (see "KOS patch" in its
+# src/der_certificate.rs).
+[patch.crates-io]
+rust_h264 = { path = "kernel/crates/rust_h264" }
+embedded-tls = { path = "kernel/crates/embedded-tls" }
+
+# Full debug info for the kernel, for lldb (`make debug`, `make lldb`). It
+# only goes in the ELF: kernel.bin, which is what boots, doesn't change size.
+[profile.release.package.kos-kernel]
+debug = true

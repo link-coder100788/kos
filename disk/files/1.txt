@@ -1,0 +1,1 @@
+hello, world! this is a custom fat32 filesystem which allows me to have an actual working sysys that is also readable my computer too! lets see if i gcan get this string on my mac

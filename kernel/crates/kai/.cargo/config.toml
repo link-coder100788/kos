@@ -1,0 +1,4 @@
+# kernel/.cargo/config.toml builds everything under kernel/ for bare metal.
+# This crate's tests and CLI run on the host, so undo that here.
+[build]
+target = "host-tuple"

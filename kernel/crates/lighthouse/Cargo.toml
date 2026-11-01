@@ -1,0 +1,30 @@
+[package]
+name = "lighthouse"
+version = "0.1.0"
+edition = "2021"
+description = "A dependency-free browser rendering engine you can inspect stage by stage (KOS no_std port)"
+license = "MIT"
+repository = "https://github.com/pavanchow/lighthouse"
+default-run = "lighthouse"
+
+[features]
+# The kernel uses `default-features = false` to get the no_std build.
+default = ["std"]
+std = []
+
+[dependencies]
+libm = "0.2.16"
+
+[[bin]]
+name = "lighthouse"
+path = "src/bin/lighthouse.rs"
+required-features = ["std"]
+
+[[bin]]
+name = "stress"
+path = "src/bin/stress.rs"
+required-features = ["std"]
+
+[lib]
+name = "lighthouse"
+path = "src/lib.rs"
