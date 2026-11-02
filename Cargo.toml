@@ -8,6 +8,7 @@ members = [
     "bootloader",
     "tools/mkdisk",
     "tools/kos-cc",
+    "tools/kos-wavtomml",
 ]
 
 # rust_h264 with a fix for a no_std memory leak (see its src/once.rs).
