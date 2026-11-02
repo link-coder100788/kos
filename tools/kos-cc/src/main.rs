@@ -10,7 +10,8 @@
 //! The output is a plain ELF (`<first source>.elf` unless `-o` says
 //! otherwise), which KOS runs with `run <name>.elf` once it's on the disk:
 //! put it in disk/ before `make disk`, or use `kos-mkdisk --put`. `--b64`
-//! also writes `<out>.b64`, the form the Programs window lists.
+//! also writes `<out>.b64`, the form the Programs window lists (from
+//! /programs: disk/programs/ before `make disk`).
 //!
 //! The library is found at KOS_LIBC if that's set, otherwise in the
 //! checkout this tool was built from. KOS_CLANG picks the compiler

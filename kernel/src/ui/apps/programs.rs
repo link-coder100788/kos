@@ -1,10 +1,11 @@
-//! Lists the programs on the disk; click one to run it.
+//! Lists the programs in /programs; click one to run it.
 
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use crate::drivers::input::MouseButton;
 use crate::filesys::fs_ipc::{fs_call, FsRequest, FsResponse};
+use crate::shell::fs::PROGRAMS_DIR;
 use crate::ui::apps::{draw_button, App, MouseEvent, ACCENT, BG, FG};
 use crate::ui::gfx::{Rect, Surface};
 
@@ -39,7 +40,7 @@ impl Programs {
     }
 
     fn refresh(&mut self) {
-        self.names = match fs_call(FsRequest::List { cwd: "/".to_string(), path: ".".to_string() }) {
+        self.names = match fs_call(FsRequest::List { cwd: "/".to_string(), path: PROGRAMS_DIR.to_string() }) {
             FsResponse::Listing(entries) => entries
                 .into_iter()
                 .filter(|e| !e.is_dir && e.name.ends_with(".elf.b64"))
@@ -115,7 +116,7 @@ impl App for Programs {
                     return true;
                 }
                 if let Some(i) = (0..self.shown()).find(|&i| self.row_rect(i).contains(x, y)) {
-                    crate::loader::run(self.names[i].clone());
+                    crate::loader::run(format!("{}/{}", PROGRAMS_DIR, self.names[i]));
                     self.status = format!("Started {}", self.names[i].trim_end_matches(".elf.b64"));
                     return true;
                 }

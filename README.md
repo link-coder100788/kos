@@ -76,8 +76,8 @@ The shell runs on the serial console and in the Terminal window at the same time
 | `help` | List commands |
 | `ls`, `cd`, `cat`, `mkdir`, `rm` `<path>` | Files |
 | `write <path> <text>` | Create a file |
-| `run <name>.elf.b64` | Run a program; the shell waits until it ends, and it gets the console. Ctrl+C ends it |
-| `bg <name>.elf.b64` | Run a program in the background: no input, output thrown away |
+| `run <path>.elf.b64` | Run a program; the shell waits until it ends, and it gets the console. Ctrl+C ends it |
+| `bg <path>.elf.b64` | Run a program in the background: no input, output thrown away |
 | `kill <id>` | End a program (ids are in `ps` and the Task Manager) |
 | `open <file>` | Show a PNG, JPEG or BMP image in a window, play an MP4 video, or play a WAV sound |
 | `k build <file.k>`, `k run out.kbin` | Compile and run a K program |
@@ -93,7 +93,7 @@ The shell runs on the serial console and in the Terminal window at the same time
 | `mmu [addr]` | Free page frames; how an address translates |
 | `dump` | Print the CPU registers |
 
-Try `run helloc.elf.b64` (prints, then echoes a line you type), `run ui_demo.elf.b64` (opens a window with buttons) or `run sound_demo.elf.b64` (a siren and a tune).
+The userspace programs are in `/programs` (the Programs window lists them), and typing a program's name runs it, like a command. Try `helloc` (prints, then echoes a line you type), `ui_demo` (opens a window with buttons) or `sound_demo` (a siren and a tune), or `run /programs/helloc.elf.b64` in full.
 
 ### K-AI
 
@@ -157,7 +157,7 @@ Underneath, `kernel/src/drivers/virtio/snd.rs` drives QEMU's virtio-sound device
 `disk.img` is a FAT image attached as a virtio-blk device. `make disk` builds it with `tools/mkdisk` from:
 
 - everything in `disk/` (K sources in `k/`, sounds in `sounds/`, images in `images/`, sample files);
-- every program in `userspace/prog/`, as `<name>.elf.b64`; and
+- every program in `userspace/prog/`, as `programs/<name>.elf.b64`; and
 - every system command in `userspace/cmd/`, as `bin/<name>.elf.b64`.
 
 `make run` / `make run-gui` create it if it's missing but never overwrite it, so files you write from inside KOS persist until the next `make disk`.
@@ -332,17 +332,17 @@ Under the library, a program talks to the kernel with `svc #n`, where `n` picks 
 
 Calls that copy something out (a file, a listing, a response) return its full length, even when the buffer was smaller, so passing a buffer of 0 bytes asks how big it is. The libc functions do that for you: ask the size, allocate, then copy.
 
-For graphics and games, `userspace/libc/canvas.h` gives a program a window it draws pixels into: lines, rectangles, circles and text, with mouse and keyboard events, presented a whole frame at a time. `run canvas_demo.elf.b64` is a sketch pad with a bouncing ball, and `run calculator.elf.b64` a scientific calculator (click or type an expression with `sin`, `cos`, `exp`, `ln`, `log`, `^`, `pi` and `e`; Enter for the result); their sources in `userspace/prog/` show how it fits together.
+For graphics and games, `userspace/libc/canvas.h` gives a program a window it draws pixels into: lines, rectangles, circles and text, with mouse and keyboard events, presented a whole frame at a time. `canvas_demo` is a sketch pad with a bouncing ball, and `calculator` a scientific calculator (click or type an expression with `sin`, `cos`, `exp`, `ln`, `log`, `^`, `pi` and `e`; Enter for the result); their sources in `userspace/prog/` show how it fits together.
 
 Assembly (`.s`) files in `userspace/prog/` work the same way.
 
 ### Outside this repo
 
-`tools/kos-cc` builds programs from anywhere on your computer: `cargo run --release -p kos-cc -- game.c` writes `game.elf`, linked with `userspace/libc` (which is on the include path, so `#include "stdio.h"`, `"net.h"` and so on). `-o` names the output, `--b64` also writes `<out>.b64`, and anything after `--` goes to clang. Put the `.elf` in `disk/`, `make disk`, and `run game.elf`.
+`tools/kos-cc` builds programs from anywhere on your computer: `cargo run --release -p kos-cc -- game.c` writes `game.elf`, linked with `userspace/libc` (which is on the include path, so `#include "stdio.h"`, `"net.h"` and so on). `-o` names the output, `--b64` also writes `<out>.b64`, and anything after `--` goes to clang. Put the `.elf` in `disk/`, `make disk`, and `run game.elf` (or the `.elf.b64` in `disk/programs/`, for the Programs window).
 
 ### System commands
 
-A `.c` file in `userspace/cmd/` is a system command instead: `make disk` puts it in `/bin` (not the Programs window), and typing its name in the shell runs it, with whatever follows as its arguments. `args()` / `get_argv()` in `sys.h` read them. `userspace/cmd/grep.c` is the first one: `grep [-i] [-n] <text> <file>...`. `run` and `bg` pass arguments too: `run prog.elf.b64 a b`.
+A `.c` file in `userspace/cmd/` is a system command instead: `make disk` puts it in `/bin` (not the Programs window), and typing its name in the shell runs it, with whatever follows as its arguments. `args()` / `get_argv()` in `sys.h` read them. `userspace/cmd/grep.c` is the first one: `grep [-i] [-n] <text> <file>...`. `run` and `bg` pass arguments too: `run /programs/prog.elf.b64 a b`. Programs in `/programs` run by name too, but a command in `/bin` wins if both have the name.
 
 `ssh [-p port] user@host [command]` logs in to another computer with a password (OpenSSH servers work out of the box: curve25519-sha256, ssh-ed25519 host keys, aes256-gcm@openssh.com), or runs one command there. The Terminal is line-based, so it is too: each line typed goes to the remote shell and the output comes back with escape codes stripped, so full-screen programs like vim don't work; `~.` on its own disconnects. Host keys are remembered in `/.kos/ssh/known_hosts`, and a changed one is refused. The crypto it needs beyond `crypto.h` (X25519, Ed25519) is in `ssh.c` itself.
 

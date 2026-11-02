@@ -806,14 +806,16 @@ static int is_kernel_command(const char* name) {
     return 0;
 }
 
-// Where program `name` is: a path, or /bin/<name>.elf.b64. Returns 0 if
-// it's found.
+// Where program `name` is: a path, or /bin/<name>.elf.b64, or else
+// /programs/<name>.elf.b64. Returns 0 if it's found.
 static int find_program(const char* name, char* out, size_t size) {
     if (strchr(name, '/') || is_program(name)) {
         abs_path(name, out, size);
         return is_file(out) ? 0 : -1;
     }
     snprintf(out, size, "/bin/%s.elf.b64", name);
+    if (is_file(out)) return 0;
+    snprintf(out, size, "/programs/%s.elf.b64", name);
     return is_file(out) ? 0 : -1;
 }
 
@@ -1428,14 +1430,17 @@ static void complete(void) {
             if (!strncmp(builtins[i].name, word, wlen) && builtins[i].name[0] != '.') matches[n++] = strdup(builtins[i].name);
         for (int i = 0; i < alias_count && n < MAX_MATCHES; i++)
             if (!strncmp(aliases[i].name, word, wlen)) matches[n++] = strdup(aliases[i].name);
-        int count;
-        fs_entry_t* entries = fs_list("/bin", &count);
-        for (int i = 0; entries && i < count && n < MAX_MATCHES; i++) {
-            if (!ends_with(entries[i].name, ".elf.b64") || strncmp(entries[i].name, word, wlen)) continue;
-            entries[i].name[strlen(entries[i].name) - 8] = '\0';
-            matches[n++] = strdup(entries[i].name);
+        static const char* const dirs[] = { "/bin", "/programs" };
+        for (int d = 0; d < 2; d++) {
+            int count;
+            fs_entry_t* entries = fs_list(dirs[d], &count);
+            for (int i = 0; entries && i < count && n < MAX_MATCHES; i++) {
+                if (!ends_with(entries[i].name, ".elf.b64") || strncmp(entries[i].name, word, wlen)) continue;
+                entries[i].name[strlen(entries[i].name) - 8] = '\0';
+                matches[n++] = strdup(entries[i].name);
+            }
+            free(entries);
         }
-        free(entries);
     } else {
         const char* slash = strrchr(word, '/');
         if (slash) {

@@ -12,7 +12,7 @@
 #                   if every test passed (the log is in build/test.log)
 #   make user       build the userspace example programs into build/user/
 #   make disk       (re)build disk.img from disk/ + the userspace programs
-#                   (and the system commands, into /bin),
+#                   (into /programs) and the system commands (into /bin),
 #                   discarding anything written to it from inside KOS
 #   make kai-setup  create K-AI's Python venv with PyTorch (once)
 #   make kai-train  regenerate K-AI's data, train and export the model, and
@@ -113,7 +113,8 @@ test: | $(DISK)
 # ---- userspace ----------------------------------------------------------
 # Programs are loaded by `run <file>` in the shell, which expects the ELF
 # base64-encoded on disk, so each program also gets a <name>.elf.b64 in
-# build/user/b64/, which is what goes on the disk.
+# build/user/disk/programs/, which is what goes on the disk (in /programs,
+# where the Programs window lists them).
 
 USER_CC     := clang -target aarch64-none-elf -fuse-ld=lld -nostdlib \
 	-fPIE -static -Wl,-pie -Wl,--image-base=0
@@ -127,9 +128,9 @@ USER_OUT    := $(BUILD)/user
 # Every .c / .s file in userspace/prog is a program. C programs link the libc.
 USER_SRC    := $(wildcard userspace/prog/*.c userspace/prog/*.s)
 USER_PROGS  := $(patsubst userspace/prog/%,$(USER_OUT)/%.elf,$(basename $(USER_SRC)))
-USER_B64    := $(patsubst $(USER_OUT)/%,$(USER_OUT)/b64/%.b64,$(USER_PROGS))
+USER_B64    := $(patsubst $(USER_OUT)/%,$(USER_OUT)/disk/programs/%.b64,$(USER_PROGS))
 # Every .c file in userspace/cmd is a system command (grep, ...): it goes in
-# /bin on the disk instead of the root, so it isn't in the Programs window,
+# /bin on the disk instead of /programs, so it isn't in the Programs window,
 # and the shell runs it when you type its name.
 CMD_SRC     := $(wildcard userspace/cmd/*.c)
 CMD_OUT     := $(USER_OUT)/cmd
@@ -145,7 +146,7 @@ $(USER_OUT)/%.elf: userspace/prog/%.c $(LIBC_SRC) $(LIBC_H) | $(USER_OUT)
 $(USER_OUT)/%.elf: userspace/prog/%.s | $(USER_OUT)
 	$(USER_CC) -o $@ $<
 
-$(USER_OUT)/b64/%.elf.b64: $(USER_OUT)/%.elf | $(USER_OUT)/b64
+$(USER_OUT)/disk/programs/%.elf.b64: $(USER_OUT)/%.elf | $(USER_OUT)/disk/programs
 	rust-objcopy --strip-debug $< $@.tmp
 	base64 < $@.tmp | tr -d '\n' > $@
 	rm $@.tmp
@@ -169,8 +170,8 @@ $(DISK):
 
 disk: user
 	@# Leave out programs whose sources were deleted.
-	rm -f $(filter-out $(USER_B64) $(CMD_B64),$(wildcard $(USER_OUT)/b64/* $(CMD_OUT)/disk/bin/*))
-	cargo run -q --release -p kos-mkdisk -- $(DISK) $(DISK_MIB) disk $(USER_OUT)/b64 $(CMD_OUT)/disk
+	rm -f $(filter-out $(USER_B64) $(CMD_B64),$(wildcard $(USER_OUT)/disk/programs/* $(CMD_OUT)/disk/bin/*))
+	cargo run -q --release -p kos-mkdisk -- $(DISK) $(DISK_MIB) disk $(USER_OUT)/disk $(CMD_OUT)/disk
 
 # ---- K-AI ---------------------------------------------------------------
 # Training runs on this computer (see tools/assistant/README.md); the model
@@ -210,7 +211,7 @@ digit-upload: | $(DISK)
 
 # ---- misc ---------------------------------------------------------------
 
-$(BUILD) $(USER_OUT) $(USER_OUT)/b64 $(CMD_OUT) $(CMD_OUT)/disk/bin:
+$(BUILD) $(USER_OUT) $(USER_OUT)/disk/programs $(CMD_OUT) $(CMD_OUT)/disk/bin:
 	mkdir -p $@
 
 clean:

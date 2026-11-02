@@ -44,6 +44,9 @@ fn set_cwd(path: String) {
 
 /// Where system commands (userspace/cmd/) live on the disk.
 pub const BIN_DIR: &str = "/bin";
+/// Where the userspace programs (userspace/prog/) live: the Programs window
+/// lists them.
+pub const PROGRAMS_DIR: &str = "/programs";
 
 /// `"prog arg1 arg2"` -> `("prog", "arg1 arg2")`.
 fn split_command(s: &str) -> (&str, &str) {
@@ -53,19 +56,17 @@ fn split_command(s: &str) -> (&str, &str) {
     }
 }
 
-/// The path of command `name` in `/bin` (`/bin/<name>.elf.b64`), if it's
-/// there.
+/// The path of command `name` in `/bin` or else `/programs`
+/// (`<dir>/<name>.elf.b64`), if it's there.
 fn find_command(name: &str) -> Option<String> {
     if name.is_empty() || name.contains('/') {
         return None;
     }
     let file = alloc::format!("{}.elf.b64", name);
-    match fs_call(FsRequest::List { cwd: "/".to_string(), path: BIN_DIR.to_string() }) {
-        FsResponse::Listing(entries) if entries.iter().any(|e| !e.is_dir && e.name == file) => {
-            Some(alloc::format!("{}/{}", BIN_DIR, file))
-        }
+    [BIN_DIR, PROGRAMS_DIR].into_iter().find_map(|dir| match fs_call(FsRequest::List { cwd: "/".to_string(), path: dir.to_string() }) {
+        FsResponse::Listing(entries) if entries.iter().any(|e| !e.is_dir && e.name == file) => Some(alloc::format!("{}/{}", dir, file)),
         _ => None,
-    }
+    })
 }
 
 impl ShellCommand {
@@ -172,7 +173,7 @@ impl ShellCommand {
                 println!("  write <path> <data>");
                 println!("  run <path> [args]  run a program; the shell waits until it ends");
                 println!("  bg <path> [args]   run a program in the background, without the console");
-                println!("  <command> [args]   run /bin/<command>.elf.b64 (e.g. grep)");
+                println!("  <command> [args]   run <command>.elf.b64 from /bin or /programs");
                 println!("  kill <id>          end a program (ids are in ps and the Task Manager)");
                 println!("  decode <path> <path>");
                 println!("  encode <path> <path>");
