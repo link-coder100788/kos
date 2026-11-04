@@ -27,7 +27,8 @@
 #   make clean
 #
 # Kernel cargo features go in FEATURES (e.g. FEATURES=test); log levels go in
-# LOG, e.g. `make run-gui LOG="net=trace,console=debug"`.
+# LOG, e.g. `make run-gui LOG="net=trace,console=debug"`. ACCEL=hvf runs KOS
+# on the Mac's CPU instead of emulating it: `make run-gui ACCEL=hvf`.
 
 BUILD    := build
 comma    := ,
@@ -50,6 +51,11 @@ GUI      ?= $(if $(filter Darwin,$(shell uname -s)),cocoa,gtk)$(comma)zoom-to-fi
 # it finds.
 DISPLAY_DEV ?= virtio-gpu
 DISPLAY_DEVICE := $(if $(filter ramfb,$(DISPLAY_DEV)),ramfb,virtio-gpu-device)
+# How QEMU runs KOS's code: tcg emulates every instruction (works anywhere,
+# slowly); hvf runs it directly on an Apple silicon Mac's CPU, through
+# macOS's Hypervisor framework, many times faster.
+ACCEL    ?= tcg
+CPU      := $(if $(filter hvf,$(ACCEL)),host,max)
 # Where KOS's sound goes: coreaudio on macOS, pa (PulseAudio) on Linux;
 # AUDIO=none for silence, or AUDIO="wav,path=out.wav" to record it.
 AUDIO    ?= $(if $(filter Darwin,$(shell uname -s)),coreaudio,pa)
@@ -58,7 +64,7 @@ KERNEL_BIN := $(BUILD)/kernel.bin
 KOS_BIN    := $(BUILD)/kos.bin
 
 QEMU := qemu-system-aarch64 \
-	-machine virt,secure=off,highmem=off -cpu max -smp $(SMP) -m $(MEM) \
+	-machine virt,secure=off,highmem=off -accel $(ACCEL) -cpu $(CPU) -smp $(SMP) -m $(MEM) \
 	-bios $(KOS_BIN) \
 	-global virtio-mmio.force-legacy=false \
 	-drive file=$(DISK),if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \

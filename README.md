@@ -43,6 +43,7 @@ Options are passed as make variables:
 |------------|-------------------|--------------------------------------------------------------------------|
 | `SMP`      | `5`               | CPU count. Core 0 runs the kernel's tasks, core 1 threads, core 2 async tasks, and cores 3-4 programs. Fewer cores works; whatever's missing runs on core 0. |
 | `MEM`      | `512M`            | RAM. The memory map in `kernel/src/mm/layout.rs` assumes 512 MiB.        |
+| `ACCEL`    | `tcg`             | `hvf` runs KOS directly on an Apple silicon Mac's CPU (macOS's Hypervisor framework) instead of emulating it: many times faster. QEMU then gives it a GICv3 rather than a GICv2, which the kernel handles either way. Apple's CPUs have no `RNDR`, though, so random numbers, and with them HTTPS, don't work under `hvf` yet. |
 | `GUI`      | `cocoa` / `gtk`, zoom-to-fit | QEMU display backend for `run-gui`. Zoom-to-fit scales KOS to the window: resize it or go full screen. |
 | `LOG`      | (empty)           | Log levels at boot, e.g. `LOG=debug` or `LOG="net=trace,console=debug"`. See [Logging](#logging-and-debugging). |
 | `FEATURES` | (empty)           | Kernel cargo features: `test` (in-kernel test suite), `restart_secondary` (restart a core that panics). |

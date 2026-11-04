@@ -10,12 +10,15 @@ fn read_cntfrq() -> u64 {
     v
 }
 
-fn set_cntp_tval(v: u64) {
-    unsafe { asm!("msr cntp_tval_el0, {0}", in(reg) v); }
+// The virtual timer rather than the physical one: they're the same without
+// a hypervisor, and under one (QEMU's hvf) only the virtual timer is the
+// guest's to use.
+fn set_cntv_tval(v: u64) {
+    unsafe { asm!("msr cntv_tval_el0, {0}", in(reg) v); }
 }
 
-fn enable_cntp() {
-    unsafe { asm!("msr cntp_ctl_el0, {0}", in(reg) 1u64); }
+fn enable_cntv() {
+    unsafe { asm!("msr cntv_ctl_el0, {0}", in(reg) 1u64); }
 }
 
 pub fn init() {
@@ -28,20 +31,20 @@ pub fn init() {
 /// Starts this core's tick. Every core has its own timer; IRQs stay masked
 /// until the core's scheduler starts.
 pub fn init_this_core() {
-    set_cntp_tval(read_cntfrq() / TICK_HZ);
-    enable_cntp();
+    set_cntv_tval(read_cntfrq() / TICK_HZ);
+    enable_cntv();
 }
 
-fn read_cntpct() -> u64 {
+fn read_cntvct() -> u64 {
     let v: u64;
-    unsafe { asm!("mrs {0}, cntpct_el0", out(reg) v); }
+    unsafe { asm!("mrs {0}, cntvct_el0", out(reg) v); }
     v
 }
 
 
 /// The current timer counter value.
 pub fn now() -> u64 {
-    read_cntpct()
+    read_cntvct()
 }
 
 /// Counter ticks per second.
@@ -51,12 +54,12 @@ pub fn frequency() -> u64 {
 
 /// Milliseconds since the machine started.
 pub fn uptime_ms() -> u64 {
-    read_cntpct() / (read_cntfrq() / 1000)
+    read_cntvct() / (read_cntfrq() / 1000)
 }
 
 /// The counter value `ms` milliseconds from now.
 pub fn deadline_after_ms(ms: u64) -> u64 {
-    read_cntpct() + read_cntfrq() * ms / 1000
+    read_cntvct() + read_cntfrq() * ms / 1000
 }
 
 /// Waits `ms` milliseconds: blocks the task on core 0 once the scheduler
@@ -67,7 +70,7 @@ pub fn delay_ms(ms: u64) {
         return;
     }
     let deadline = deadline_after_ms(ms);
-    while read_cntpct() < deadline {
+    while read_cntvct() < deadline {
         core::hint::spin_loop();
     }
 }
@@ -83,7 +86,7 @@ impl core::future::Future for Delay {
     type Output = ();
 
     fn poll(self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<()> {
-        if read_cntpct().wrapping_sub(self.start) >= self.ticks {
+        if read_cntvct().wrapping_sub(self.start) >= self.ticks {
             core::task::Poll::Ready(())
         } else {
             // No timer wakeups yet, so ask to be polled again.
@@ -94,7 +97,7 @@ impl core::future::Future for Delay {
 }
 
 pub fn delay_ms_async(ms: u64) -> Delay {
-    Delay { start: read_cntpct(), ticks: (read_cntfrq() * ms) / 1000 }
+    Delay { start: read_cntvct(), ticks: (read_cntfrq() * ms) / 1000 }
 }
 
 pub static TICKS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
@@ -102,7 +105,7 @@ pub static TICKS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64:
 pub fn on_tick() {
     TICKS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     crate::scheduler::account_tick();
-    set_cntp_tval(read_cntfrq() / TICK_HZ);
+    set_cntv_tval(read_cntfrq() / TICK_HZ);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -112,7 +115,7 @@ pub struct Instant {
 
 impl Instant {
     #[inline]
-    pub fn now() -> Self { Self { ticks: read_cntpct() } }
+    pub fn now() -> Self { Self { ticks: read_cntvct() } }
 
     #[inline]
     pub fn elapsed(self) -> Duration { Self::now() - self }
