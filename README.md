@@ -157,8 +157,9 @@ Underneath, `kernel/src/drivers/virtio/snd.rs` drives QEMU's virtio-sound device
 `disk.img` is a FAT image attached as a virtio-blk device. `make disk` builds it with `tools/mkdisk` from:
 
 - everything in `disk/` (K sources in `k/`, sounds in `sounds/`, images in `images/`, sample files);
-- every program in `userspace/prog/`, as `programs/<name>.elf.b64`; and
-- every system command in `userspace/cmd/`, as `bin/<name>.elf.b64`.
+- every program in `userspace/prog/`, as `programs/<name>.elf.b64`;
+- every system command in `userspace/cmd/`, as `bin/<name>.elf.b64`; and
+- every game in `games/`, as `games/<name>.elf`.
 
 `make run` / `make run-gui` create it if it's missing but never overwrite it, so files you write from inside KOS persist until the next `make disk`.
 
@@ -339,6 +340,10 @@ Assembly (`.s`) files in `userspace/prog/` work the same way.
 ### Outside this repo
 
 `tools/kos-cc` builds programs from anywhere on your computer: `cargo run --release -p kos-cc -- game.c` writes `game.elf`, linked with `userspace/libc` (which is on the include path, so `#include "stdio.h"`, `"net.h"` and so on). `-o` names the output, `--b64` also writes `<out>.b64`, and anything after `--` goes to clang. Put the `.elf` in `disk/`, `make disk`, and `run game.elf` (or the `.elf.b64` in `disk/programs/`, for the Programs window).
+
+### Games
+
+Each folder in `games/` is a game, built from all of its `.c` and `.s` files (linked with the libc) into one program named after the folder: `make games` builds them, and `make disk` puts each on the disk as `/games/<name>.elf`, so `games/powder/` is `run /games/powder.elf`. There are two so far: Glowfly (`games/glowfly/`), a one-button firefly game, and Powder Run (`games/powder/`), a 3D downhill ski game with its own little software renderer. Each folder's README says how to play.
 
 ### System commands
 

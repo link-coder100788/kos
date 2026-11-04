@@ -11,9 +11,11 @@
 #   make test       build with the in-kernel test suite, boot it, and exit 0
 #                   if every test passed (the log is in build/test.log)
 #   make user       build the userspace example programs into build/user/
+#   make games      build every game in games/ into build/user/games/
 #   make disk       (re)build disk.img from disk/ + the userspace programs
-#                   (into /programs) and the system commands (into /bin),
-#                   discarding anything written to it from inside KOS
+#                   (into /programs), the system commands (into /bin) and
+#                   the games (into /games), discarding anything written to
+#                   it from inside KOS
 #   make kai-setup  create K-AI's Python venv with PyTorch (once)
 #   make kai-train  regenerate K-AI's data, train and export the model, and
 #                   check KOS's Rust copy gives the same results as PyTorch
@@ -66,7 +68,7 @@ QEMU := qemu-system-aarch64 \
 	-rtc base=utc -fw_cfg name=opt/kos/utc_offset,string=$(UTC_OFFSET) \
 	$(if $(LOG),-fw_cfg name=opt/kos/log$(comma)string=$(subst $(comma),$(comma)$(comma),$(LOG)))
 
-.PHONY: all kernel kos run run-gui debug lldb test user disk kai kai-setup kai-train kai-upload digit-setup digit-train digit-upload clean FORCE
+.PHONY: all kernel kos run run-gui debug lldb test user games disk kai kai-setup kai-train kai-upload digit-setup digit-train digit-upload clean FORCE
 
 all: kos
 
@@ -159,6 +161,26 @@ $(CMD_OUT)/disk/bin/%.elf.b64: $(CMD_OUT)/%.elf | $(CMD_OUT)/disk/bin
 	base64 < $@.tmp | tr -d '\n' > $@
 	rm $@.tmp
 
+# ---- games --------------------------------------------------------------
+# Every folder in games/ is a game: its .c and .s files are built into one
+# program named after the folder, which goes on the disk as a plain ELF,
+# games/<name>/ -> /games/<name>.elf (`run /games/<name>.elf` in the shell).
+# build/user/games/debug keeps the debug info; the disk's copies are stripped.
+
+GAME_DIRS := $(patsubst %/,%,$(wildcard games/*/))
+GAME_OUT  := $(USER_OUT)/games
+GAME_DEBUG := $(patsubst games/%,$(GAME_OUT)/debug/%.elf,$(GAME_DIRS))
+GAME_ELFS  := $(patsubst games/%,$(GAME_OUT)/disk/games/%.elf,$(GAME_DIRS))
+
+games: $(GAME_DEBUG) $(GAME_ELFS)
+
+.SECONDEXPANSION:
+$(GAME_OUT)/debug/%.elf: $$(wildcard games/$$*/*.c games/$$*/*.s) $(LIBC_SRC) $(LIBC_H) | $(GAME_OUT)/debug
+	$(USER_CC) $(USER_CFLAGS) -o $@ $(filter %.c %.s,$^)
+
+$(GAME_OUT)/disk/games/%.elf: $(GAME_OUT)/debug/%.elf | $(GAME_OUT)/disk/games
+	rust-objcopy --strip-debug $< $@
+
 # ---- disk ---------------------------------------------------------------
 # disk.img is only created when missing, so `make run` never wipes what you
 # wrote to it. `make disk` rebuilds it from scratch.
@@ -168,10 +190,10 @@ DISK_MIB := 32
 $(DISK):
 	$(MAKE) disk
 
-disk: user
+disk: user games
 	@# Leave out programs whose sources were deleted.
-	rm -f $(filter-out $(USER_B64) $(CMD_B64),$(wildcard $(USER_OUT)/disk/programs/* $(CMD_OUT)/disk/bin/*))
-	cargo run -q --release -p kos-mkdisk -- $(DISK) $(DISK_MIB) disk $(USER_OUT)/disk $(CMD_OUT)/disk
+	rm -f $(filter-out $(USER_B64) $(CMD_B64) $(GAME_ELFS),$(wildcard $(USER_OUT)/disk/programs/* $(CMD_OUT)/disk/bin/* $(GAME_OUT)/disk/games/*))
+	cargo run -q --release -p kos-mkdisk -- $(DISK) $(DISK_MIB) disk $(USER_OUT)/disk $(CMD_OUT)/disk $(GAME_OUT)/disk
 
 # ---- K-AI ---------------------------------------------------------------
 # Training runs on this computer (see tools/assistant/README.md); the model
@@ -211,7 +233,7 @@ digit-upload: | $(DISK)
 
 # ---- misc ---------------------------------------------------------------
 
-$(BUILD) $(USER_OUT) $(USER_OUT)/disk/programs $(CMD_OUT) $(CMD_OUT)/disk/bin:
+$(BUILD) $(USER_OUT) $(USER_OUT)/disk/programs $(CMD_OUT) $(CMD_OUT)/disk/bin $(GAME_OUT)/debug $(GAME_OUT)/disk/games:
 	mkdir -p $@
 
 clean:
