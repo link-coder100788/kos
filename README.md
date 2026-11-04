@@ -255,6 +255,7 @@ Programs are freestanding: they start at `_start`, must call `exit()`, and use K
 | `net.h` | HTTP and HTTPS requests (any method, headers and body), `ping`, TCP connections and UDP sockets |
 | `crypto.h` | SHA-256, SHA-512, HMAC-SHA256 and AES-256-GCM, done by the kernel; `crypto_equal` for comparing MACs |
 | `canvas.h` | Windows you draw pixels into, for graphics and games |
+| `render3d.h` | A software 3D renderer for canvases: a camera, shapes, terrain, lighting and fog, with a depth buffer |
 
 See `userspace/prog/ui_demo.c` for a program with a window.
 
@@ -335,6 +336,8 @@ Calls that copy something out (a file, a listing, a response) return its full le
 
 For graphics and games, `userspace/libc/canvas.h` gives a program a window it draws pixels into: lines, rectangles, circles and text, with mouse and keyboard events, presented a whole frame at a time. `canvas_demo` is a sketch pad with a bouncing ball, and `calculator` a scientific calculator (click or type an expression with `sin`, `cos`, `exp`, `ln`, `log`, `^`, `pi` and `e`; Enter for the result); their sources in `userspace/prog/` show how it fits together.
 
+For 3D, `userspace/libc/render3d.h` draws onto a canvas. Set a camera (`r3d_look_at`), then between `r3d_begin` and `r3d_end` place boxes, cones, cylinders, spheres, your own meshes, lines and heightfield terrain, moved by a model transform with push and pop for models made of parts. It does the perspective, clipping, flat shading by a sun, fog and the depth buffer, at a fraction of the window's size for chunky pixels (optionally with CRT scanlines), and `r3d_project` puts labels on things. `demo3d` is a scene to fly round with one of everything in it, and Powder Run (`games/powder/`) is a game built on it.
+
 Assembly (`.s`) files in `userspace/prog/` work the same way.
 
 ### Outside this repo
@@ -343,7 +346,7 @@ Assembly (`.s`) files in `userspace/prog/` work the same way.
 
 ### Games
 
-Each folder in `games/` is a game, built from all of its `.c` and `.s` files (linked with the libc) into one program named after the folder: `make games` builds them, and `make disk` puts each on the disk as `/games/<name>.elf`, so `games/powder/` is `run /games/powder.elf`. There are two so far: Glowfly (`games/glowfly/`), a one-button firefly game, and Powder Run (`games/powder/`), a 3D downhill ski game with its own little software renderer. Each folder's README says how to play.
+Each folder in `games/` is a game, built from all of its `.c` and `.s` files (linked with the libc) into one program named after the folder: `make games` builds them, and `make disk` puts each on the disk as `/games/<name>.elf`, so `games/powder/` is `run /games/powder.elf`. There are two so far: Glowfly (`games/glowfly/`), a one-button firefly game, and Powder Run (`games/powder/`), a 3D downhill ski game drawn with `render3d.h`. Each folder's README says how to play.
 
 ### System commands
 

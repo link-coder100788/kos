@@ -7,30 +7,20 @@
 // each gate to win time and build a combo; when the clock runs out the run
 // is over.
 //
-// The world is drawn by a small software renderer: flat-shaded polygons,
-// clipped against the near plane and filled scanline by scanline into a
-// 320x240 buffer, which is doubled up to the window with dimmed scanlines.
-// The terrain is drawn row by row from the horizon in, each row's objects
-// straight after it, so nearer things cover farther ones without a depth
-// buffer.
+// The world is drawn with libc's render3d.h at half the window's size,
+// doubled up with dimmed scanlines like a cabinet's monitor.
 //
 // Escape quits. The best score is kept in /powder.hi.
 #include "sys.h"
 #include "canvas.h"
 #include "math.h"
+#include "render3d.h"
 #include "print/print.h"
 
-#define RW 320             // the 3D view's buffer
-#define RH 240
-#define W (RW * 2)         // the window
-#define H (RH * 2)
+#define W 640              // the window; the 3D view is half this
+#define H 480
 
-#define FOCAL 230.0        // pixels: about a 70 degree view
-#define CX (RW / 2.0)
-#define CY (RH * 0.42)
-#define NEAR 0.25
-
-#define CELL 4.0           // terrain grid spacing, in metres
+#define CELL 4.0f           // terrain grid spacing, in metres
 #define ROWS 20            // terrain rows drawn ahead of the camera
 #define COLS 11            // terrain cells drawn either side of it
 #define FOG_NEAR 22.0
@@ -44,8 +34,6 @@
 #define START_TIME 30.0
 #define HISCORE_FILE "/powder.hi"
 
-typedef struct { double x, y, z; } vec3;
-
 enum { TREE, ROCK, GATE };
 enum { PENDING, PASSED, MISSED };
 
@@ -53,7 +41,7 @@ typedef struct {
     int kind, alive;
     double x, y, z;        // on the ground; a gate's x is its middle
     double size;           // a gate's is its half-width
-    double ca, sa;         // cos and sin of its turn about the vertical
+    double angle;          // its turn about the vertical
     int state, red;        // gates only
 } obj_t;
 
@@ -62,7 +50,7 @@ typedef struct { double x, y, speed; } flake_t;
 enum { TITLE, PLAYING, OVER };
 
 static canvas_t c;
-static uint32_t fb[RW * RH];
+static r3d_t r;
 static obj_t objs[MAX_OBJ];
 static flake_t flakes[MAX_FLAKES];
 static double ridge[1024];  // the mountains on the horizon
@@ -74,9 +62,8 @@ static uint64_t seed = 0x2545f4914f6cdd1dull;
 static double sx, sz, heading, speed, air, air_v, lean, crash_t, crash_side;
 static int steer;          // -4..4: how far the skis are turned, in 22.5 degree steps
 
-// The camera.
-static vec3 cam;
-static double cam_yaw, cam_pitch, cyaw, syaw, cpitch, spitch;
+// The camera: its pitch is how far it looks down.
+static double cam_yaw, cam_pitch;
 
 // The course as it's built.
 static double built_z, prev_gate_z, prev_gate_x, next_gate_z, next_gate_x;
@@ -88,8 +75,9 @@ static const char* msg = "";
 static uint32_t msg_color;
 static int new_best;
 
-static const vec3 SUN = { -0.45, 0.8, -0.4 };
-static const vec3 HAZE = { 205, 216, 238 };
+#define HAZE_R 205
+#define HAZE_G 216
+#define HAZE_B 238
 
 // ---- small helpers ------------------------------------------------------------
 
@@ -106,19 +94,6 @@ static double rand_range(double lo, double hi) {
 
 static double clamp(double v, double lo, double hi) {
     return v < lo ? lo : v > hi ? hi : v;
-}
-
-static vec3 v3(double x, double y, double z) { return (vec3){ x, y, z }; }
-static vec3 sub(vec3 a, vec3 b) { return v3(a.x - b.x, a.y - b.y, a.z - b.z); }
-static double dot(vec3 a, vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
-
-static vec3 cross(vec3 a, vec3 b) {
-    return v3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
-}
-
-static vec3 normalize(vec3 a) {
-    double l = sqrt(dot(a, a));
-    return l > 0 ? v3(a.x / l, a.y / l, a.z / l) : a;
 }
 
 static long read_best(void) {
@@ -193,13 +168,12 @@ static void sound_tick(void) {
 
 // The run falls away downhill (+z), steeper and gentler by turns, and rises
 // into banks either side of the groomed trail.
-static double vertex_height(int i, int j) {
-    double x = i * CELL, z = j * CELL;
+static float slope_height(float x, float z) {
     double h = -0.28 * z + 3.0 * sin(z * 0.02);
     h += 0.45 * sin(x * 0.37 + z * 0.11) * sin(z * 0.29);
     double out = fabs(x) - (TRAIL - 2);
     if (out > 0) h += 0.5 * out + 0.6 * sin(x * 0.9 + z * 0.4);
-    return h;
+    return (float)h;
 }
 
 // How far downhill the run falls per metre at z: what drives the skier on.
@@ -207,18 +181,10 @@ static double grade(double z) {
     return 0.28 - 0.06 * cos(z * 0.02);
 }
 
-// The height of the drawn terrain at (x, z): each grid cell is split into
-// two flat triangles along its diagonal, as it's drawn.
+// The height of the snow at (x, z), exactly as the grid of CELL-sized
+// cells it's drawn as.
 static double ground_height(double x, double z) {
-    int i = (int)floor(x / CELL), j = (int)floor(z / CELL);
-    double fx = x / CELL - i, fz = z / CELL - j;
-    double h00 = vertex_height(i, j), h11 = vertex_height(i + 1, j + 1);
-    if (fx >= fz) {
-        double h10 = vertex_height(i + 1, j);
-        return h00 + fx * (h10 - h00) + fz * (h11 - h10);
-    }
-    double h01 = vertex_height(i, j + 1);
-    return h00 + fz * (h01 - h00) + fx * (h11 - h01);
+    return r3d_heightfield_at(0, 0, CELL, slope_height, (float)x, (float)z);
 }
 
 // ---- the course ---------------------------------------------------------------
@@ -227,8 +193,7 @@ static obj_t* add_obj(int kind, double x, double z, double size) {
     for (int i = 0; i < MAX_OBJ; i++) {
         obj_t* o = &objs[i];
         if (o->alive) continue;
-        double a = rand_range(0, 6.28);
-        *o = (obj_t){ kind, 1, x, ground_height(x, z), z, size, cos(a), sin(a), PENDING, 0 };
+        *o = (obj_t){ kind, 1, x, ground_height(x, z), z, size, rand_range(0, 6.28), PENDING, 0 };
         return o;
     }
     return 0;
@@ -441,222 +406,91 @@ static long total_score(void) {
     return score + (long)fmax(0, sz);
 }
 
-// ---- the renderer ---------------------------------------------------------------
+// ---- drawing ------------------------------------------------------------------
 
 static void place_camera(double dt) {
     cam_yaw += (heading * 0.45 - cam_yaw) * clamp(dt * 3, 0, 1);
     double back = 6.0;
-    cam.x = sx - sin(cam_yaw) * back;
-    cam.z = sz - cos(cam_yaw) * back;
-    cam.y = fmax(ground_height(sx, sz) + 2.9, ground_height(cam.x, cam.z) + 1.5);
-    if (crash_t > 0) cam.y += 0.12 * sin(crash_t * 40) * crash_t;
+    r3d_vec cam;
+    cam.x = (float)(sx - sin(cam_yaw) * back);
+    cam.z = (float)(sz - cos(cam_yaw) * back);
+    cam.y = (float)fmax(ground_height(sx, sz) + 2.9, ground_height(cam.x, cam.z) + 1.5);
+    if (crash_t > 0) cam.y += (float)(0.12 * sin(crash_t * 40) * crash_t);
 
     double ahead = 8.0;
     double ty = ground_height(sx + sin(cam_yaw) * ahead, sz + cos(cam_yaw) * ahead) + 0.4;
     double want = atan2(cam.y - ty, back + ahead);
     cam_pitch += (want - cam_pitch) * clamp(dt * 4, 0, 1);
-
-    cyaw = cos(cam_yaw);
-    syaw = sin(cam_yaw);
-    cpitch = cos(cam_pitch);
-    spitch = sin(cam_pitch);
+    // Aim a little above the skier, so they're low on the screen with
+    // plenty of slope ahead.
+    r3d_camera(&r, cam, (float)cam_yaw, (float)-(cam_pitch - 0.08));
 }
 
-// A point in the camera's frame: x right, y up, z into the screen.
-static vec3 view(vec3 p) {
-    double dx = p.x - cam.x, dy = p.y - cam.y, dz = p.z - cam.z;
-    double x = dx * cyaw - dz * syaw, z = dx * syaw + dz * cyaw;
-    return v3(x, dy * cpitch + z * spitch, z * cpitch - dy * spitch);
+static uint32_t snow(float x, float z) {
+    // The groomer leaves the trail in stripes of corduroy.
+    if (fabs(x) < TRAIL - 1 && (int)floor(z / CELL) % 2) return rgb(225, 231, 244);
+    return rgb(236, 242, 255);
 }
 
-static int iceil(double v) {
-    int i = (int)v;
-    return i < v ? i + 1 : i;
+// A piece of a model, w by h by d, centred on (x, y, z) in the model.
+static void part(float x, float y, float z, float w, float h, float d, uint32_t color) {
+    r3d_push(&r);
+    r3d_translate(&r, x, y, z);
+    r3d_box(&r, w, h, d, color);
+    r3d_pop(&r);
 }
 
-// Fills a convex polygon given in screen coordinates.
-static void fill_poly(const double* px, const double* py, int n, uint32_t color) {
-    double top = py[0], bottom = py[0];
-    for (int i = 1; i < n; i++) {
-        if (py[i] < top) top = py[i];
-        if (py[i] > bottom) bottom = py[i];
-    }
-    int y0 = iceil(clamp(top, -1, RH + 1) - 0.5), y1 = iceil(clamp(bottom, -1, RH + 1) - 0.5);
-    if (y0 < 0) y0 = 0;
-    if (y1 > RH) y1 = RH;
-    for (int y = y0; y < y1; y++) {
-        double yc = y + 0.5, lo = 1e9, hi = -1e9;
-        for (int i = 0, j = n - 1; i < n; j = i++) {
-            if ((py[j] <= yc) == (py[i] <= yc)) continue;
-            double x = px[j] + (yc - py[j]) * (px[i] - px[j]) / (py[i] - py[j]);
-            if (x < lo) lo = x;
-            if (x > hi) hi = x;
-        }
-        if (lo > hi) continue;
-        int x0 = iceil(clamp(lo, -1, RW + 1) - 0.5), x1 = iceil(clamp(hi, -1, RW + 1) - 0.5);
-        if (x0 < 0) x0 = 0;
-        if (x1 > RW) x1 = RW;
-        uint32_t* row = fb + y * RW;
-        for (int x = x0; x < x1; x++) row[x] = color;
-    }
+// A tier of a pine: a five-sided cone standing at height y in the model.
+static void tier(float y, float radius, float height, uint32_t color) {
+    r3d_push(&r);
+    r3d_translate(&r, 0, y, 0);
+    r3d_cone(&r, radius, height, 5, color);
+    r3d_pop(&r);
 }
 
-// Draws a polygon given in the camera's frame, cutting away whatever is
-// behind the near plane.
-static void draw_view_poly(const vec3* v, int n, uint32_t color) {
-    double px[16], py[16];
-    int m = 0;
-    for (int i = 0; i < n; i++) {
-        vec3 a = v[i], b = v[(i + 1) % n];
-        int a_in = a.z >= NEAR, b_in = b.z >= NEAR;
-        if (a_in) {
-            px[m] = CX + FOCAL * a.x / a.z;
-            py[m] = CY - FOCAL * a.y / a.z;
-            m++;
-        }
-        if (a_in != b_in) {
-            double t = (NEAR - a.z) / (b.z - a.z);
-            px[m] = CX + FOCAL * (a.x + t * (b.x - a.x)) / NEAR;
-            py[m] = CY - FOCAL * (a.y + t * (b.y - a.y)) / NEAR;
-            m++;
-        }
-    }
-    if (m >= 3) fill_poly(px, py, m, color);
-}
-
-// A colour lit by the sun from normal n, fading into the haze with depth.
-static uint32_t shade(double r, double g, double b, vec3 n, double depth) {
-    double d = dot(n, SUN);
-    double l = d > 0 ? 0.68 + 0.32 * d : 0.68 + 0.22 * d;
-    r *= l;
-    g *= l;
-    b *= 0.25 + 0.75 * l;  // shadows go blue, like snow
-    double t = clamp((depth - FOG_NEAR) / (FOG_FAR - FOG_NEAR), 0, 1);
-    r += (HAZE.x - r) * t;
-    g += (HAZE.y - g) * t;
-    b += (HAZE.z - b) * t;
-    return rgb((uint8_t)clamp(r, 0, 255), (uint8_t)clamp(g, 0, 255), (uint8_t)clamp(b, 0, 255));
-}
-
-// Draws one face of a solid, convex object (given in world space) if it
-// faces the camera. `inside` is any point within the object.
-static void solid_face(const vec3* v, int n, vec3 inside, double r, double g, double b) {
-    vec3 normal = normalize(cross(sub(v[1], v[0]), sub(v[2], v[0])));
-    if (dot(normal, sub(v[0], inside)) < 0) normal = v3(-normal.x, -normal.y, -normal.z);
-    if (dot(normal, sub(v[0], cam)) >= 0) return;
-    vec3 vv[8];
-    for (int i = 0; i < n; i++) vv[i] = view(v[i]);
-    draw_view_poly(vv, n, shade(r, g, b, normal, vv[0].z));
-}
-
-// A face seen from both sides, like a flag.
-static void flat_face(const vec3* v, int n, double r, double g, double b) {
-    vec3 normal = normalize(cross(sub(v[1], v[0]), sub(v[2], v[0])));
-    if (dot(normal, sub(v[0], cam)) > 0) normal = v3(-normal.x, -normal.y, -normal.z);
-    vec3 vv[8];
-    for (int i = 0; i < n; i++) vv[i] = view(v[i]);
-    draw_view_poly(vv, n, shade(r, g, b, normal, vv[0].z));
-}
-
-// Where a model's local axes point, for the boxes the skier is built from.
-static vec3 m_pos, m_x, m_y, m_z;
-
-static vec3 model(double x, double y, double z) {
-    return v3(m_pos.x + m_x.x * x + m_y.x * y + m_z.x * z,
-              m_pos.y + m_x.y * x + m_y.y * y + m_z.y * z,
-              m_pos.z + m_x.z * x + m_y.z * y + m_z.z * z);
-}
-
-// A box centred on (x, y, z) in model space, hx by hy by hz from centre to side.
-static void box(double x, double y, double z, double hx, double hy, double hz, double r, double g, double b) {
-    static const int faces[6][4] = {
-        { 0, 2, 6, 4 }, { 1, 3, 7, 5 }, { 0, 1, 5, 4 }, { 2, 3, 7, 6 }, { 0, 1, 3, 2 }, { 4, 5, 7, 6 },
-    };
-    vec3 p[8];
-    for (int k = 0; k < 8; k++) {
-        p[k] = model(x + (k & 1 ? hx : -hx), y + (k & 2 ? hy : -hy), z + (k & 4 ? hz : -hz));
-    }
-    vec3 inside = model(x, y, z);
-    for (int f = 0; f < 6; f++) {
-        vec3 quad[4] = { p[faces[f][0]], p[faces[f][1]], p[faces[f][2]], p[faces[f][3]] };
-        solid_face(quad, 4, inside, r, g, b);
-    }
-}
-
-// The model axes for something standing at p, turned by yaw and rolled.
-static void set_model(vec3 p, double yaw, double roll) {
-    double cy = cos(yaw), sy = sin(yaw), cr = cos(roll), sr = sin(roll);
-    m_pos = p;
-    m_x = v3(cr * cy, sr, -cr * sy);
-    m_y = v3(-sr * cy, cr, sr * sy);
-    m_z = v3(sy, 0, cy);
-}
-
-// A pine tier: a five-sided cone standing on (x, y, z).
-static void cone(const obj_t* o, double y, double h, double radius, double r, double g, double b) {
-    vec3 apex = v3(o->x, y + h, o->z), inside = v3(o->x, y + h * 0.3, o->z);
-    vec3 ring[5];
-    for (int k = 0; k < 5; k++) {
-        static const double ck[5] = { 1, 0.309017, -0.809017, -0.809017, 0.309017 };
-        static const double sk[5] = { 0, 0.951057, 0.587785, -0.587785, -0.951057 };
-        double cx = ck[k] * o->ca - sk[k] * o->sa, sz_ = sk[k] * o->ca + ck[k] * o->sa;
-        ring[k] = v3(o->x + radius * cx, y, o->z + radius * sz_);
-    }
-    for (int k = 0; k < 5; k++) {
-        vec3 tri[3] = { apex, ring[k], ring[(k + 1) % 5] };
-        solid_face(tri, 3, inside, r, g, b);
-    }
-}
-
-static void draw_tree(const obj_t* o, double depth) {
-    double s = o->size, y = o->y;
-    double tint = (o->ca + 1) * 10;
+static void draw_tree(const obj_t* o, float depth) {
+    int tint = (int)(10 + 10 * sin(o->angle * 3));
+    r3d_push(&r);
+    r3d_translate(&r, (float)o->x, (float)o->y, (float)o->z);
+    r3d_rotate_y(&r, (float)o->angle);
+    r3d_scale(&r, (float)o->size, (float)o->size, (float)o->size);
     if (depth > 48) {
-        cone(o, y + 0.3 * s, 4.4 * s, 1.5 * s, 30, 90 + tint, 62);
-        return;
+        tier(0.3f, 1.5f, 4.4f, rgb(30, 90 + tint, 62));  // far off, one cone will do
+    } else {
+        part(0, 0.4f, 0, 0.36f, 0.8f, 0.36f, rgb(110, 74, 50));
+        tier(0.6f, 1.5f, 2.2f, rgb(30, 88 + tint, 60));
+        tier(1.7f, 1.15f, 1.9f, rgb(36, 102 + tint, 68));
+        tier(2.8f, 0.75f, 1.7f, rgb(200, 220, 230));  // a snowy top
     }
-    vec3 p = v3(o->x, y, o->z);
-    set_model(p, 0, 0);
-    box(0, 0.4 * s, 0, 0.18 * s, 0.4 * s, 0.18 * s, 110, 74, 50);
-    cone(o, y + 0.6 * s, 2.2 * s, 1.5 * s, 30, 88 + tint, 60);
-    cone(o, y + 1.7 * s, 1.9 * s, 1.15 * s, 36, 102 + tint, 68);
-    cone(o, y + 2.8 * s, 1.7 * s, 0.75 * s, 200, 220, 230);  // a snowy top
+    r3d_pop(&r);
 }
 
 static void draw_rock(const obj_t* o) {
-    double s = o->size;
-    vec3 lo[5], hi[5];
-    vec3 inside = v3(o->x, o->y + 0.2 * s, o->z);
-    for (int k = 0; k < 5; k++) {
-        double a = k * 1.2566 + o->ca;
-        double r = s * (0.9 + 0.15 * ((k * 7 + (int)(o->sa * 10)) % 3));
-        lo[k] = v3(o->x + r * cos(a), o->y - 0.15, o->z + r * sin(a));
-        hi[k] = v3(o->x + 0.55 * r * cos(a + 0.3), o->y + 0.7 * s, o->z + 0.55 * r * sin(a + 0.3));
-    }
-    for (int k = 0; k < 5; k++) {
-        int n = (k + 1) % 5;
-        vec3 side[4] = { lo[k], lo[n], hi[n], hi[k] };
-        solid_face(side, 4, inside, 120, 116, 124);
-    }
-    solid_face(hi, 5, inside, 236, 240, 255);
+    r3d_push(&r);
+    r3d_translate(&r, (float)o->x, (float)o->y, (float)o->z);
+    r3d_rotate_y(&r, (float)o->angle);
+    r3d_scale(&r, (float)o->size, (float)o->size * 0.6f, (float)o->size);
+    r3d_sphere(&r, 0.9f, 3, rgb(120, 116, 124));
+    r3d_translate(&r, 0, 0.32f, 0);
+    r3d_scale(&r, 1, 0.5f, 1);
+    r3d_sphere(&r, 0.6f, 3, rgb(236, 240, 255));  // snow on top
+    r3d_pop(&r);
 }
 
 static void draw_gate(const obj_t* o) {
-    double r = o->red ? 230 : 40, g = 50, b = o->red ? 50 : 210;
-    if (o->state == PASSED) { r = 255; g = 205; b = 40; }
-    if (o->state == MISSED) { r = 120; g = 120; b = 130; }
+    uint32_t color = o->red ? rgb(230, 50, 50) : rgb(40, 50, 210);
+    if (o->state == PASSED) color = rgb(255, 205, 40);
+    if (o->state == MISSED) color = rgb(120, 120, 130);
     for (int side = -1; side <= 1; side += 2) {
-        double x = o->x + side * o->size;
-        double y = ground_height(x, o->z);
-        set_model(v3(x, y, o->z), 0, 0);
-        box(0, 1.0, 0, 0.06, 1.0, 0.06, 250, 250, 250);
-        vec3 flag[3] = { v3(x, y + 2.0, o->z), v3(x, y + 1.4, o->z), v3(x + side * 0.8, y + 1.75, o->z + 0.1) };
-        flat_face(flag, 3, r, g, b);
+        float x = (float)(o->x + side * o->size), z = (float)o->z;
+        float y = (float)ground_height(x, z);
+        part(x, y + 1, z, 0.12f, 2, 0.12f, rgb(250, 250, 250));
+        r3d_triangle(&r, r3d_v(x, y + 2, z), r3d_v(x, y + 1.4f, z), r3d_v(x + side * 0.8f, y + 1.75f, z + 0.1f), color);
     }
 }
 
 static void draw_skier(void) {
-    double ground = ground_height(sx, sz);
+    float ground = (float)ground_height(sx, sz);
     double yaw = heading, roll = lean, sink = 0;
     if (crash_t > 0) {
         double t = 1.4 - crash_t;
@@ -668,53 +502,46 @@ static void draw_skier(void) {
 
     // The shadow, flat on the snow: it shows how high a jump is.
     double cy = cos(heading), sy = sin(heading);
-    vec3 shadow[4];
+    r3d_vec shadow[4];
     static const double corners[4][2] = { { -0.45, -0.9 }, { 0.45, -0.9 }, { 0.45, 0.9 }, { -0.45, 0.9 } };
     double spread = 1 + air * 0.4;
     for (int k = 0; k < 4; k++) {
         double lx = corners[k][0] * spread, lz = corners[k][1];
-        double x = sx + lx * cy + lz * sy, z = sz - lx * sy + lz * cy;
-        shadow[k] = v3(x, ground_height(x, z) + 0.04, z);
+        float x = (float)(sx + lx * cy + lz * sy), z = (float)(sz - lx * sy + lz * cy);
+        shadow[k] = r3d_v(x, (float)ground_height(x, z) + 0.06f, z);
     }
-    flat_face(shadow, 4, 170, 180, 215);
+    r.unlit = 1;
+    r3d_polygon(&r, shadow, 4, rgb(165, 175, 210));
+    r.unlit = 0;
 
-    set_model(v3(sx, ground + air - sink, sz), yaw, roll);
-    box(-0.15, 0.03, 0.15, 0.05, 0.03, 0.85, 250, 200, 30);   // skis
-    box(0.15, 0.03, 0.15, 0.05, 0.03, 0.85, 250, 200, 30);
-    box(0, 0.45, 0, 0.2, 0.4, 0.14, 40, 50, 120);             // legs
-    box(0, 1.1, 0.06, 0.25, 0.28, 0.16, 225, 40, 45);         // jacket
-    box(-0.33, 0.9, 0.0, 0.03, 0.4, 0.03, 60, 60, 70);         // poles
-    box(0.33, 0.9, 0.0, 0.03, 0.4, 0.03, 60, 60, 70);
-    box(0, 1.53, 0.06, 0.13, 0.13, 0.13, 240, 196, 160);      // head
-    box(0, 1.69, 0.06, 0.14, 0.06, 0.14, 250, 250, 250);      // hat
+    r3d_push(&r);
+    r3d_translate(&r, (float)sx, (float)(ground + air - sink), (float)sz);
+    r3d_rotate_y(&r, (float)yaw);
+    r3d_rotate_z(&r, (float)roll);
+    part(-0.15f, 0.03f, 0.15f, 0.1f, 0.06f, 1.7f, rgb(250, 200, 30));   // skis
+    part(0.15f, 0.03f, 0.15f, 0.1f, 0.06f, 1.7f, rgb(250, 200, 30));
+    part(0, 0.45f, 0, 0.4f, 0.8f, 0.28f, rgb(40, 50, 120));             // legs
+    part(0, 1.1f, 0.06f, 0.5f, 0.56f, 0.32f, rgb(225, 40, 45));         // jacket
+    part(-0.33f, 0.9f, 0, 0.06f, 0.8f, 0.06f, rgb(60, 60, 70));          // poles
+    part(0.33f, 0.9f, 0, 0.06f, 0.8f, 0.06f, rgb(60, 60, 70));
+    part(0, 1.53f, 0.06f, 0.26f, 0.26f, 0.26f, rgb(240, 196, 160));     // head
+    part(0, 1.69f, 0.06f, 0.28f, 0.12f, 0.28f, rgb(250, 250, 250));     // hat
+    r3d_pop(&r);
 }
 
-// The sky, and mountains along the horizon that slide as the camera turns.
-static void draw_sky(void) {
-    int horizon = (int)(CY - FOCAL * tan(cam_pitch));
-    for (int y = 0; y < RH; y++) {
-        uint32_t color;
-        if (y < horizon) {
-            double t = clamp((double)y / (horizon > 1 ? horizon : 1), 0, 1);
-            color = rgb((uint8_t)(70 + t * 135), (uint8_t)(110 + t * 106), (uint8_t)(200 + t * 38));
-        } else {
-            color = rgb((uint8_t)HAZE.x, (uint8_t)HAZE.y, (uint8_t)HAZE.z);
-        }
-        uint32_t* row = fb + y * RW;
-        for (int x = 0; x < RW; x++) row[x] = color;
-    }
-    int shift = (int)(cam_yaw * FOCAL * 0.5);
-    for (int x = 0; x < RW; x++) {
-        double h = ridge[(x + shift) & 1023];
-        int top = horizon - (int)h;
-        for (int y = top < 0 ? 0 : top; y < horizon + 12 && y < RH; y++) {
-            double t = clamp((y - top) / (h + 12), 0, 1);
-            int snowy = y - top < h * 0.35;
-            double r = snowy ? 235 : 120, g = snowy ? 240 : 135, b = snowy ? 252 : 175;
-            r += (HAZE.x - r) * t * 0.8;
-            g += (HAZE.y - g) * t * 0.8;
-            b += (HAZE.z - b) * t * 0.8;
-            fb[y * RW + x] = rgb((uint8_t)r, (uint8_t)g, (uint8_t)b);
+// Mountains along the horizon, sliding as the camera turns.
+static void draw_mountains(void) {
+    int horizon = r3d_horizon(&r), w = r.screen.width, h = r.screen.height;
+    int shift = (int)(cam_yaw * r.focal * 0.5);
+    for (int x = 0; x < w; x++) {
+        double ht = ridge[(x + shift) & 1023];
+        int top = horizon - (int)ht;
+        for (int y = top < 0 ? 0 : top; y < horizon + 12 && y < h; y++) {
+            double t = clamp((y - top) / (ht + 12), 0, 1) * 0.8;
+            int snowy = y - top < ht * 0.35;
+            double cr = snowy ? 235 : 120, cg = snowy ? 240 : 135, cb = snowy ? 252 : 175;
+            r.screen.pixels[y * w + x] = rgb((uint8_t)(cr + (HAZE_R - cr) * t), (uint8_t)(cg + (HAZE_G - cg) * t),
+                                             (uint8_t)(cb + (HAZE_B - cb) * t));
         }
     }
 }
@@ -728,124 +555,45 @@ static void make_ridge(void) {
     }
 }
 
-static vec3 grid_world[ROWS + 1][2 * COLS + 1];
-static vec3 grid_view[ROWS + 1][2 * COLS + 1];
-static int row_head[ROWS], obj_next[MAX_OBJ + 1];
-static double obj_depth[MAX_OBJ + 1];
-#define SKIER MAX_OBJ      // the skier's slot in the draw lists
-
-static void draw_terrain_cell(int r, int col, int j, int i) {
-    for (int t = 0; t < 2; t++) {
-        // The two triangles of the cell, split the same way as ground_height.
-        int a[3][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 } };
-        if (t) { a[1][0] = 1; a[1][1] = 1; a[2][0] = 0; a[2][1] = 1; }
-        vec3 w[3], v[3];
-        for (int k = 0; k < 3; k++) {
-            w[k] = grid_world[r + a[k][1]][col + a[k][0]];
-            v[k] = grid_view[r + a[k][1]][col + a[k][0]];
-        }
-        if (v[0].z < NEAR && v[1].z < NEAR && v[2].z < NEAR) continue;
-        vec3 normal = normalize(cross(sub(w[2], w[0]), sub(w[1], w[0])));
-        if (normal.y < 0) normal = v3(-normal.x, -normal.y, -normal.z);
-        double depth = (v[0].z + v[1].z + v[2].z) / 3;
-        double x = (i + 0.5) * CELL;
-        double l = 1.0;
-        if (fabs(x) < TRAIL - 1 && (j & 1)) l = 0.955;  // the groomer's corduroy
-        draw_view_poly(v, 3, shade(236 * l, 242 * l, 255 * l, normal, depth));
-    }
-}
-
-static void draw_objects_in_row(int r) {
-    for (int k = row_head[r]; k >= 0; k = obj_next[k]) {
-        if (k == SKIER) { draw_skier(); continue; }
-        obj_t* o = &objs[k];
-        if (o->kind == TREE) draw_tree(o, obj_depth[k]);
-        else if (o->kind == ROCK) draw_rock(o);
-        else draw_gate(o);
-    }
-}
-
-// Files object k under the terrain row its nearest edge is in, keeping
-// each row's list sorted far to near. It reaches `reach` metres either way
-// across the slope and `depth` metres up and down it.
-static void file_object(int k, double x, double y, double z, double reach, double depth, int j0) {
-    vec3 v = view(v3(x, y, z));
-    if (v.z < -reach - 1) return;
-    // Don't let something right by the camera block the view of the skier.
-    if (k != SKIER && v.z < 2.5 && fabs(v.x) < reach + 1) return;
-    if (fabs(v.x) > (v.z + reach) * (CX / FOCAL) + reach + 1) return;
-    int r = (int)floor((z - depth) / CELL) - j0;
-    if (r < 0) r = 0;
-    if (r >= ROWS) return;
-    obj_depth[k] = v.z;
-    int* p = &row_head[r];
-    while (*p >= 0 && obj_depth[*p] > v.z) p = &obj_next[*p];
-    obj_next[k] = *p;
-    *p = k;
-}
-
 static void draw_world(void) {
-    draw_sky();
+    r3d_begin(&r);
+    draw_mountains();
 
-    int j0 = (int)floor(cam.z / CELL), i0 = (int)floor(cam.x / CELL) - COLS;
-    for (int r = 0; r <= ROWS; r++) {
-        for (int col = 0; col <= 2 * COLS; col++) {
-            int i = i0 + col, j = j0 + r;
-            vec3 w = v3(i * CELL, vertex_height(i, j), j * CELL);
-            grid_world[r][col] = w;
-            grid_view[r][col] = view(w);
-        }
-    }
+    // The slope, from just behind the camera to the fog.
+    int i0 = (int)floor(sx / CELL) - COLS, j0 = (int)floor((sz - 6) / CELL);
+    r3d_heightfield(&r, i0 * CELL, j0 * CELL, 2 * COLS, ROWS, CELL, slope_height, snow);
 
-    for (int r = 0; r < ROWS; r++) row_head[r] = -1;
     for (int k = 0; k < MAX_OBJ; k++) {
         obj_t* o = &objs[k];
         if (!o->alive) continue;
-        if (o->kind == GATE) {
-            file_object(k, o->x, o->y + 1, o->z, o->size + 1, 0.2, j0);
-        } else {
-            double reach = o->kind == TREE ? 1.6 * o->size : 1.2 * o->size;
-            file_object(k, o->x, o->y + 1, o->z, reach, reach, j0);
-        }
+        float s = (float)o->size;
+        r3d_vec at = r3d_v((float)o->x, (float)o->y + 1, (float)o->z);
+        if (!r3d_visible(&r, at, o->kind == GATE ? s + 1 : 3 * s)) continue;
+        int px, py;
+        float depth = r3d_project(&r, at, &px, &py);
+        // Don't let a tree right by the camera block the view of the skier.
+        if (o->kind == TREE && depth > 0 && depth < 2.5 && px > 0 && px < W) continue;
+        if (o->kind == TREE) draw_tree(o, depth);
+        else if (o->kind == ROCK) draw_rock(o);
+        else draw_gate(o);
     }
-    file_object(SKIER, sx, ground_height(sx, sz) + 1, sz, 1.3, 1.3, j0);
-
-    for (int r = ROWS - 1; r >= 0; r--) {
-        // Outside in, so the banks are drawn before the trail they look down on.
-        for (int col = 0; col < COLS; col++) draw_terrain_cell(r, col, j0 + r, i0 + col);
-        for (int col = 2 * COLS - 1; col >= COLS; col--) draw_terrain_cell(r, col, j0 + r, i0 + col);
-        draw_objects_in_row(r);
-    }
+    draw_skier();
 }
 
 static void draw_snowfall(double dt) {
+    int w = r.screen.width, h = r.screen.height;
+    uint32_t* fb = r.screen.pixels;
     for (int i = 0; i < MAX_FLAKES; i++) {
         flake_t* f = &flakes[i];
         f->y += f->speed * dt * (1 + speed * 0.05);
         f->x += (sin(f->y * 0.05 + i) * 6 - heading * 25 * f->speed / 40) * dt;
-        if (f->y >= RH) { f->y -= RH; f->x = rand_range(0, RW); }
-        if (f->x < 0) f->x += RW;
-        if (f->x >= RW) f->x -= RW;
+        if (f->y >= h) { f->y -= h; f->x = rand_range(0, w); }
+        if (f->x < 0) f->x += w;
+        if (f->x >= w) f->x -= w;
         int x = (int)f->x, y = (int)f->y;
-        fb[y * RW + x] = rgb(255, 255, 255);
-        if (f->speed > 45 && x + 1 < RW && y + 1 < RH) {
-            fb[y * RW + x + 1] = fb[(y + 1) * RW + x] = fb[(y + 1) * RW + x + 1] = rgb(255, 255, 255);
-        }
-    }
-}
-
-// Doubles the buffer up into the window, every other line dimmed like a
-// cabinet's monitor.
-static void blit(void) {
-    for (int y = 0; y < RH; y++) {
-        const uint32_t* src = fb + y * RW;
-        uint32_t* a = c.pixels + (2 * y) * W;
-        uint32_t* b = a + W;
-        for (int x = 0; x < RW; x++) {
-            uint32_t p = src[x];
-            uint32_t dim = ((p >> 1) & 0x7f7f7f) + ((p >> 2) & 0x3f3f3f);
-            a[2 * x] = a[2 * x + 1] = p;
-            b[2 * x] = b[2 * x + 1] = dim;
+        fb[y * w + x] = rgb(255, 255, 255);
+        if (f->speed > 45 && x + 1 < w && y + 1 < h) {
+            fb[y * w + x + 1] = fb[(y + 1) * w + x] = fb[(y + 1) * w + x + 1] = rgb(255, 255, 255);
         }
     }
 }
@@ -893,7 +641,7 @@ static void draw(double dt) {
     place_camera(dt);
     draw_world();
     draw_snowfall(dt);
-    blit();
+    r3d_end(&r);
 
     char buf[40];
     if (state == TITLE) {
@@ -955,16 +703,26 @@ static void turn(int by) {
 }
 
 void _start(void) {
-    if (canvas_open(&c, "Powder Run", W, H) != 0) {
+    if (canvas_open(&c, "Powder Run", W, H) != 0 || r3d_init(&r, &c, 2) != 0) {
         writeln("powder: couldn't open a window");
         exit();
     }
+    // A bright winter's day: blue shadows on the snow, and haze far off.
+    r.sun = r3d_v(-0.45f, 0.8f, -0.4f);
+    r.ambient = r3d_v(0.6f, 0.6f, 0.72f);
+    r.sun_light = r3d_v(0.4f, 0.4f, 0.28f);
+    r.sky_top = rgb(70, 110, 200);
+    r.sky_horizon = r.ground = r.fog_color = rgb(HAZE_R, HAZE_G, HAZE_B);
+    r.fog_near = FOG_NEAR;
+    r.fog_far = FOG_FAR;
+    r.near = 0.25f;
+    r.scanlines = 1;
     writeln("powder: arrows or mouse to turn, space to jump; escape quits");
     best = read_best();
     seed ^= uptime_ms() * 0x9e3779b97f4a7c15ull;
     make_ridge();
     for (int i = 0; i < MAX_FLAKES; i++) {
-        flakes[i] = (flake_t){ rand_range(0, RW), rand_range(0, RH), rand_range(18, 60) };
+        flakes[i] = (flake_t){ rand_range(0, W / 2), rand_range(0, H / 2), rand_range(18, 60) };
     }
     reset();
 
