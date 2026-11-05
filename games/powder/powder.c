@@ -32,7 +32,7 @@
 #define AHEAD 110.0        // how far ahead the course is built
 
 #define START_TIME 30.0
-#define HISCORE_FILE "/powder.hi"
+#define HISCORE_FILE "/games/powder.hi"
 
 enum { TREE, ROCK, GATE };
 enum { PENDING, PASSED, MISSED };

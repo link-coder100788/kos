@@ -31,7 +31,7 @@
 #define LIGHT_DRAIN 0.0011 // per frame: about 18 s from full to dark
 #define SPORE_LIGHT 0.30
 
-#define HISCORE_FILE "/glowfly.hi"
+#define HISCORE_FILE "/games/glowfly.hi"
 
 typedef struct {
     double x;
