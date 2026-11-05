@@ -24,6 +24,8 @@
 #   make digit-setup create the digit recogniser's Python venv (once)
 #   make digit-train make its training data, train it and export the model
 #   make digit-upload put the exported recogniser on disk.img
+#   make package    build build/KOS.app: KOS, a fresh disk and QEMU (with
+#                   its libraries) in one double-clickable Mac app
 #   make doc        build the kernel's API docs (rustdoc, private items too) into
 #                   target/aarch64-unknown-none/doc/; OPEN=1 opens them in a browser
 #   make clean
@@ -86,7 +88,7 @@ QEMU = qemu-system-aarch64 \
 	-rtc base=utc -fw_cfg name=opt/kos/utc_offset,string=$(UTC_OFFSET) \
 	$(if $(LOG),-fw_cfg name=opt/kos/log$(comma)string=$(subst $(comma),$(comma)$(comma),$(LOG)))
 
-.PHONY: all kernel kos run run-gui debug lldb test doc user games disk kai kai-setup kai-train kai-upload digit-setup digit-train digit-upload clean FORCE
+.PHONY: all kernel kos run run-gui debug lldb test doc package user games disk kai kai-setup kai-train kai-upload digit-setup digit-train digit-upload clean FORCE
 
 all: kos
 
@@ -130,6 +132,20 @@ test: | $(DISK)
 	else \
 		echo "make test: FAILED (see $(BUILD)/test.log)"; exit 1; \
 	fi
+
+# KOS.app: build/kos.bin, a fresh disk (not $(DISK), which may be in use)
+# and QEMU_BIN with every library it needs, by tools/package_app.py. The
+# app's launcher repeats the QEMU flags above: keep the two in step.
+QEMU_BIN    ?= $(shell command -v qemu-system-aarch64)
+PACKAGE_DIR := $(BUILD)/package
+
+package:
+	$(MAKE) kos FEATURES=
+	@mkdir -p $(PACKAGE_DIR)
+	rm -f $(PACKAGE_DIR)/disk.img
+	$(MAKE) disk DISK=$(PACKAGE_DIR)/disk.img
+	python3 tools/package_app.py --qemu "$(QEMU_BIN)" --kos $(KOS_BIN) --disk $(PACKAGE_DIR)/disk.img --out $(BUILD)/KOS.app
+	@echo "make package: open $(BUILD)/KOS.app, or copy it to /Applications"
 
 # The kernel is a binary crate, so its docs include private items; only
 # its own crates are documented, not the dependencies.
