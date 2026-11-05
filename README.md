@@ -26,7 +26,7 @@ On Linux, install `qemu-system-aarch64` (often in a `qemu-system-arm` package), 
 
 ### As a Mac app
 
-`make package` builds `build/KOS.app`: KOS, a fresh disk and QEMU in one app you can double-click, or copy to `/Applications` (or to another Apple silicon Mac, which then needs neither Homebrew nor QEMU). QEMU comes with every library it needs that macOS doesn't have, all signed ad hoc; `QEMU_BIN=...` picks a QEMU other than the one on your `PATH`. `tools/package_app.py` does the work.
+`make package` builds `build/KOS.app`: KOS, a fresh disk and QEMU in one app you can double-click, or copy to `/Applications` (or to another Apple silicon Mac, which then needs neither Homebrew nor QEMU). QEMU comes with every library it needs that macOS doesn't have, all signed ad hoc; `QEMU_BIN=...` picks a QEMU other than the one on your `PATH`. `tools/package_app.py` does the work, and `tools/make_icon.py` draws the icon ("KOS" in the system's pixel font on the desktop's colors; `--png icon.png` writes just the picture).
 
 The app keeps its disk and settings in `~/Library/Application Support/KOS/`, so what you do in KOS survives rebuilding the app. When a rebuilt app brings a newer disk (new programs), it asks before replacing yours, and keeps the old one as `disk.img.old`. `kos.conf` there holds the settings, read at each start: `ACCEL`, `SMP`, `MEM`, `DISPLAY_DEV`, `LOG`, `FULL_SCREEN=1`, and `FWD`, which by default forwards `localhost:2222` to KOS's port 22 for `sshd`. The serial console is in QEMU's View menu, and QEMU's own messages go to `qemu.log` there. Opening the app while KOS is running only says so, since both would need the same disk.
 

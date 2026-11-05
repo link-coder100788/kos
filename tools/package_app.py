@@ -12,6 +12,7 @@ The app holds:
                                         doesn't have, pointed at each other
     Contents/Resources/kos.bin          the bootloader with the kernel
     Contents/Resources/disk.img         a fresh disk, copied out on first run
+    Contents/Resources/KOS.icns         the icon, drawn by tools/make_icon.py
 
 QEMU's libraries come from wherever it was installed (Homebrew, usually):
 each one's own libraries are followed too, and their load paths rewritten
@@ -32,6 +33,8 @@ import re
 import shutil
 import subprocess
 import sys
+
+import make_icon
 
 FRAMEWORKS_REF = "@executable_path/../Frameworks"
 
@@ -238,6 +241,7 @@ def info_plist(version):
         "CFBundleDisplayName": "KOS",
         "CFBundleIdentifier": "local.kos.KOS",
         "CFBundleExecutable": "KOS",
+        "CFBundleIconFile": "KOS",
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": version,
         "CFBundleVersion": version,
@@ -296,6 +300,7 @@ def main():
     shutil.copy2(args.disk, os.path.join(resources, "disk.img"))
     with open(os.path.join(resources, "disk.id"), "w") as f:
         f.write(sha256_file(args.disk) + "\n")
+    make_icon.make_icns(os.path.join(resources, "KOS.icns"))
     launcher = os.path.join(macos, "KOS")
     with open(launcher, "w") as f:
         f.write(LAUNCHER)
