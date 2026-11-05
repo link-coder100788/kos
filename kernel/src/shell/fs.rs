@@ -69,6 +69,16 @@ fn find_command(name: &str) -> Option<String> {
     })
 }
 
+/// What `run` / `bg` were given: a bare name (no extension, so it can't be
+/// a program file) is looked up like a command; anything else is a path.
+fn program_path(given: &str) -> String {
+    if given.contains('.') {
+        given.to_string()
+    } else {
+        find_command(given).unwrap_or_else(|| given.to_string())
+    }
+}
+
 impl ShellCommand {
     /// Never panics on malformed input -- worst case returns None (after
     /// printing why) so a shell typo can't take down the whole kernel.
@@ -118,7 +128,7 @@ impl ShellCommand {
                     None
                 } else {
                     let (path, args) = split_command(rest);
-                    Some(ShellCommand::Run(path.to_string(), args.to_string()))
+                    Some(ShellCommand::Run(program_path(path), args.to_string()))
                 }
             },
             "bg" => {
@@ -127,7 +137,7 @@ impl ShellCommand {
                     None
                 } else {
                     let (path, args) = split_command(rest);
-                    Some(ShellCommand::Bg(path.to_string(), args.to_string()))
+                    Some(ShellCommand::Bg(program_path(path), args.to_string()))
                 }
             },
             "decode" => match rest.split_once(' ') {
@@ -171,8 +181,8 @@ impl ShellCommand {
                 println!("  mkdir <path>");
                 println!("  rm <path>");
                 println!("  write <path> <data>");
-                println!("  run <path> [args]  run a program; the shell waits until it ends");
-                println!("  bg <path> [args]   run a program in the background, without the console");
+                println!("  run <path|command> [args]  run a program; the shell waits until it ends");
+                println!("  bg <path|command> [args]   run a program in the background, without the console");
                 println!("  <command> [args]   run <command>.elf.b64 from /bin or /programs");
                 println!("  kill <id>          end a program (ids are in ps and the Task Manager)");
                 println!("  decode <path> <path>");

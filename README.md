@@ -78,8 +78,8 @@ The shell runs on the serial console and in the Terminal window at the same time
 | `help` | List commands |
 | `ls`, `cd`, `cat`, `mkdir`, `rm` `<path>` | Files |
 | `write <path> <text>` | Create a file |
-| `run <path>.elf.b64` | Run a program; the shell waits until it ends, and it gets the console. Ctrl+C ends it |
-| `bg <path>.elf.b64` | Run a program in the background: no input, output thrown away |
+| `run <path>.elf.b64` | Run a program; the shell waits until it ends, and it gets the console. Ctrl+C ends it. A bare name (`run grep ...`) is looked up in `/bin` and `/programs` |
+| `bg <path>.elf.b64` | Run a program in the background: no input, output thrown away. Names are looked up as for `run`: `bg sshd` |
 | `kill <id>` | End a program (ids are in `ps` and the Task Manager) |
 | `open <file>` | Show a PNG, JPEG or BMP image in a window, play an MP4 video, or play a WAV sound |
 | `k build <file.k>`, `k run out.kbin` | Compile and run a K program |
@@ -130,6 +130,8 @@ make kai           # kai-train, then kai-upload
 QEMU gives KOS a virtual Ethernet card and routes its traffic through your computer's connection (wifi or wired), so KOS can reach the internet. KOS configures itself with DHCP: it gets `10.0.2.15`, and your computer is reachable from inside KOS as `10.0.2.2`. To serve your own files to the Browser, run a web server on your computer, for example `python3 -m http.server 8000` in a folder, then open `http://10.0.2.2:8000/` in KOS.
 
 The other way round, KOS can listen for connections, but QEMU only lets them in on ports you forward. Start KOS with, say, `make run-gui FWD="tcp::9000-:9000"`, run `nc -l 9000` in KOS, and `nc localhost 9000` on your computer: lines typed on either side show up on the other.
+
+To log in to KOS from your computer, set a password with `sshd -passwd` in the Terminal, start the server with `bg sshd`, and forward a port to it: `make run-gui FWD="tcp::2222-:22"`, then `ssh -p 2222 me@localhost` (see [System commands](#system-commands)).
 
 ### Sound
 
@@ -332,6 +334,8 @@ Under the library, a program talks to the kernel with `svc #n`, where `n` picks 
 | | 2 | key, len, data, len, out → 0 (32-byte HMAC-SHA256) | `hmac_sha256` |
 | | 3 | `aead_t*` → 0 (encrypts in place, writes the tag) | `aes_gcm_seal` |
 | | 4 | `aead_t*` → 0, or -1 if the tag doesn't match (decrypts in place) | `aes_gcm_open` |
+| | 5 | password, len, out, max → the Argon2id PHC string's length (NUL-terminated in out) | `argon2id_hash` |
+| | 6 | password, len, PHC string → 1 if it matches, else 0 | `argon2id_verify` |
 | 16 sound | 0 | hz → 0 (a steady tone until the next sound; 0 is silence) | `snd` |
 | | 1 | → 0, once the beep is over | `beep` |
 | | 2 | notes, len → 0 once the tune is over, or -1 for bad notes | `play` |
@@ -359,7 +363,9 @@ Each folder in `games/` is a game, built from all of its `.c` and `.s` files (li
 
 A `.c` file in `userspace/cmd/` is a system command instead: `make disk` puts it in `/bin` (not the Programs window), and typing its name in the shell runs it, with whatever follows as its arguments. `args()` / `get_argv()` in `sys.h` read them. `userspace/cmd/grep.c` is the first one: `grep [-i] [-n] <text> <file>...`. `run` and `bg` pass arguments too: `run /programs/prog.elf.b64 a b`. Programs in `/programs` run by name too, but a command in `/bin` wins if both have the name.
 
-`ssh [-p port] user@host [command]` logs in to another computer with a password (OpenSSH servers work out of the box: curve25519-sha256, ssh-ed25519 host keys, aes256-gcm@openssh.com), or runs one command there. The Terminal is line-based, so it is too: each line typed goes to the remote shell and the output comes back with escape codes stripped, so full-screen programs like vim don't work; `~.` on its own disconnects. Host keys are remembered in `/.kos/ssh/known_hosts`, and a changed one is refused. The crypto it needs beyond `crypto.h` (X25519, Ed25519) is in `ssh.c` itself.
+`ssh [-p port] user@host [command]` logs in to another computer with a password (OpenSSH servers work out of the box: curve25519-sha256, ssh-ed25519 host keys, aes256-gcm@openssh.com), or runs one command there. The Terminal is line-based, so it is too: each line typed goes to the remote shell and the output comes back with escape codes stripped, so full-screen programs like vim don't work; `~.` on its own disconnects. Host keys are remembered in `/.kos/ssh/known_hosts`, and a changed one is refused. X25519 and Ed25519 are in the libc's `crypto.c`, alongside the kernel's hashes and ciphers.
+
+`sshd` (`userspace/cmd/sshd.c`) is the other end: an SSH server, so you can log in to KOS. `sshd -passwd` (in the Terminal, since it asks) sets the password, kept as an Argon2id hash in `/.kos/ssh/sshd_password`; `bg sshd [-p port]` serves on port 22 or the one given. There are no user accounts yet, so any user name works with the password, and three wrong ones disconnect you. The Ed25519 host key is made the first time, in `/.kos/ssh/sshd_host_key`, and its fingerprint goes in `/.kos/ssh/sshd.log`, where sshd notes connections and logins (a `bg` program's output is thrown away). A session gets sshd's own shell, with line editing and history on a terminal: `ls`, `cd`, `cat`, `echo`, `grep`, `wc`, `head`, `cp`, `mv`, `rm`, `mkdir`, `touch`, `get <url>`, `ping`, `date`, ... (`help` lists them), with `;` between commands and `>` / `>>` into files. Programs can't pass their output to another program yet, so other `/bin` programs start with `run <name>` and print on the KOS console, not over SSH. `ssh host command` runs one command and returns its exit status. One session at a time: anyone else connecting waits until it ends (a client gets 60 seconds to log in). Under QEMU, forward a port to it, e.g. `make run-gui FWD="tcp::2222-:22"` and `ssh -p 2222 me@localhost`.
 
 `ksh` (`userspace/cmd/ksh.c`) is a second shell, a C program in its own Shell window: type `ksh` in the Terminal. It has its own builtins (`ls`, `cd`, `cat`, `echo`, `alias`, `jobs`, ...), chains commands with `;`, `&&`, `||` and `&`, and has variables (`$X`, `$?`), quotes, `*` globs, history, Tab completion and scripts (`source file`; `/.kshrc` runs at the start). Programs it runs print in the Terminal, and it has no pipes or redirection yet. `help` in it lists everything.
 

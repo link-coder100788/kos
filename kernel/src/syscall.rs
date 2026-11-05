@@ -526,8 +526,10 @@ mod crypto {
     pub const HMAC_SHA256: u64 = 2; // (key, key_len, data, data_len, out[32])
     pub const AES_GCM_SEAL: u64 = 3; // (aead*): encrypts in place, writes the tag
     pub const AES_GCM_OPEN: u64 = 4; // (aead*): checks the tag, decrypts in place
+    pub const ARGON2ID_HASH: u64 = 5;   // (password, len, out, max) -> the PHC string's length
+    pub const ARGON2ID_VERIFY: u64 = 6; // (password, len, phc) -> 1 if it matches, else 0
 
-    const_unique!(SHA256, SHA512, HMAC_SHA256, AES_GCM_SEAL, AES_GCM_OPEN);
+    const_unique!(SHA256, SHA512, HMAC_SHA256, AES_GCM_SEAL, AES_GCM_OPEN, ARGON2ID_HASH, ARGON2ID_VERIFY);
 }
 
 /// What a program passes for AES-256-GCM (libc's `aead_t`): pointers to
@@ -579,6 +581,23 @@ pub fn syscall_crypto(frame: &mut SyscallContext) {
             } else {
                 fail("the data or its tag has been changed")
             }
+        }
+        crypto::ARGON2ID_HASH => {
+            let Some(password) = user_bytes(frame, frame[0], frame[1]) else { frame[0] = fail("bad password"); return };
+            let phc = crate::crypto::argon::hash(password);
+            // With a NUL after it, if there's room.
+            let mut out = phc.into_bytes();
+            out.push(0);
+            match copy_out(frame, frame[2], frame[3], &out) {
+                u64::MAX => fail("bad output buffer"),
+                n if n > frame[3] => fail("the output buffer is too small"),
+                n => n - 1,
+            }
+        }
+        crypto::ARGON2ID_VERIFY => {
+            let (Some(password), Some(phc)) = (user_bytes(frame, frame[0], frame[1]), user_cstr(frame, frame[2]))
+            else { frame[0] = fail("bad password or hash"); return };
+            crate::crypto::argon::verify(password, phc) as u64
         }
         _ => { log::warn!("crypto syscall: unknown sub-command {}", syscall_num); u64::MAX }
     };
