@@ -31,6 +31,7 @@ static int parse_port(const char* s) {
 static void print_help(void) {
     writeln("Usage: nc HOST PORT        connect to HOST on PORT using TCP");
     writeln("       nc -u HOST PORT     send to HOST on PORT using UDP");
+    writeln("       nc -l PORT          wait for one TCP connection on PORT");
     writeln("       nc -u -l PORT       listen for UDP datagrams on PORT");
     writeln("Type lines to send them (each one a datagram with -u); received data is printed.");
 }
@@ -51,10 +52,6 @@ static int parse_args(int argc, char** argv, nc_args_t* parsed) {
         argv++;
     }
     if (parsed->listen) {
-        if (!parsed->udp) {
-            writeln("nc: -l only works with -u");
-            return -1;
-        }
         if (argc != 1) {
             writeln("nc: expected PORT");
             return -1;
@@ -139,6 +136,47 @@ static int run_udp(const nc_args_t* parsed) {
     return 0;
 }
 
+// Prints what has arrived. Returns false once the connection is over.
+static bool print_received(long conn) {
+    char received[BUFFER_SIZE];
+    for (;;) {
+        long n = tcp_try_recv(conn, received, sizeof(received));
+        if (n == TCP_NOTHING_YET) return true;
+        if (n == 0) return false;
+        if (n < 0) {
+            write("nc: receive failed: ");
+            writeln(last_error());
+            return false;
+        }
+        write_bytes((const uint8_t*)received, (size_t)n);
+    }
+}
+
+// Sends typed lines and prints what comes back, until either side is done.
+static void talk(long conn) {
+    char input[BUFFER_SIZE];
+    // Give a greeting a moment to arrive.
+    sleep_ms(200);
+    while (print_received(conn)) {
+        long input_len = readln(input, sizeof(input) - 1);
+        if (input_len < 0) {
+            // No more input: print whatever else is on its way, then stop.
+            sleep_ms(200);
+            print_received(conn);
+            break;
+        }
+        input[input_len++] = '\n';
+        if (tcp_send(conn, input, (size_t)input_len) < 0) {
+            write("nc: send failed: ");
+            writeln(last_error());
+            break;
+        }
+        // Give a reply a moment to arrive.
+        sleep_ms(200);
+    }
+    tcp_close(conn);
+}
+
 static int run_nc(const nc_args_t* parsed) {
     long conn = tcp_connect(parsed->host, parsed->port);
     if (conn < 0) {
@@ -146,59 +184,30 @@ static int run_nc(const nc_args_t* parsed) {
         writeln(last_error());
         return 1;
     }
-    write("Connected to ");
-    write(parsed->host);
-    write(":");
-    char port_text[6];
-    int port = parsed->port;
-    int n = 0;
-    do {
-        port_text[n++] = (char)('0' + port % 10);
-        port /= 10;
-    } while (port > 0 && n < 5);
-    for (int i = 0; i < n / 2; i++) {
-        char c = port_text[i];
-        port_text[i] = port_text[n - 1 - i];
-        port_text[n - 1 - i] = c;
+    printf("Connected to %s:%d\n", parsed->host, parsed->port);
+    talk(conn);
+    return 0;
+}
+
+static int run_tcp_listen(const nc_args_t* parsed) {
+    long listener = tcp_listen(parsed->port);
+    if (listener < 0) {
+        write("nc: can't listen: ");
+        writeln(last_error());
+        return 1;
     }
-    port_text[n] = '\0';
-    writeln(port_text);
-    char input[BUFFER_SIZE];
-    char received[BUFFER_SIZE];
-    bool input_done = false;
-    bool connection_done = false;
-    while (!connection_done) {
-        if (!input_done) {
-            long input_len = readln(input, sizeof(input) - 1);
-            if (input_len < 0) {
-                input_done = true;
-            } else {
-                input[input_len] = '\0';
-                if (tcp_send(conn, input, (size_t)input_len) < 0) {
-                    writeln("nc: send failed");
-                    break;
-                }
-                if (tcp_send(conn, "\n", 1) < 0) {
-                    writeln("nc: send failed");
-                    break;
-                }
-            }
-        }
-        long received_len = tcp_try_recv(conn, received, sizeof(received));
-        if (received_len > 0) {
-            write_bytes((const uint8_t*)received, (size_t)received_len);
-        } else if (received_len == 0) {
-            connection_done = true;
-        } else if (received_len != TCP_NOTHING_YET && received_len < 0) {
-            write("nc: receive failed: ");
-            writeln(last_error());
-            break;
-        }
-        if (input_done && received_len == TCP_NOTHING_YET) {
-            break;
-        }
+    printf("Listening on TCP port %d\n", parsed->port);
+    tcp_peer_t from;
+    long conn = tcp_accept(listener, &from);
+    // Only the one connection.
+    tcp_listen_close(listener);
+    if (conn < 0) {
+        write("nc: accept failed: ");
+        writeln(last_error());
+        return 1;
     }
-    tcp_close(conn);
+    printf("Connection from %s:%d\n", from.host, from.port);
+    talk(conn);
     return 0;
 }
 
@@ -220,7 +229,8 @@ void _start(void) {
         print_help();
         exit();
     }
-    if (parsed.listen) (void)run_udp_listen(&parsed);
+    if (parsed.listen && parsed.udp) (void)run_udp_listen(&parsed);
+    else if (parsed.listen) (void)run_tcp_listen(&parsed);
     else if (parsed.udp) (void)run_udp(&parsed);
     else (void)run_nc(&parsed);
     exit();

@@ -60,16 +60,26 @@ CPU      := $(if $(filter hvf,$(ACCEL)),host,max)
 # AUDIO=none for silence, or AUDIO="wav,path=out.wav" to record it.
 AUDIO    ?= $(if $(filter Darwin,$(shell uname -s)),coreaudio,pa)
 
+# Ports on this computer passed through to KOS, as QEMU hostfwd rules
+# separated by spaces: FWD="tcp::8080-:80" lets this computer's browser
+# reach a server on KOS's port 80 at localhost:8080.
+FWD      ?=
+# make test listens on TEST_PORT inside KOS and reaches it from KOS
+# itself through this computer's TEST_HOST_PORT (see test/net.rs).
+TEST_PORT      := 7321
+TEST_HOST_PORT := 47321
+
 KERNEL_BIN := $(BUILD)/kernel.bin
 KOS_BIN    := $(BUILD)/kos.bin
 
-QEMU := qemu-system-aarch64 \
+# Recursive (=), so a target can add to FWD.
+QEMU = qemu-system-aarch64 \
 	-machine virt,secure=off,highmem=off -accel $(ACCEL) -cpu $(CPU) -smp $(SMP) -m $(MEM) \
 	-bios $(KOS_BIN) \
 	-global virtio-mmio.force-legacy=false \
 	-drive file=$(DISK),if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
 	-device virtio-keyboard-device -device virtio-tablet-device \
-	-netdev user,id=net0 -device virtio-net-device,netdev=net0 \
+	-netdev user,id=net0$(foreach f,$(FWD),$(comma)hostfwd=$(f)) -device virtio-net-device,netdev=net0 \
 	-audiodev $(AUDIO),id=snd0 -device virtio-sound-device,audiodev=snd0,streams=1 \
 	-rtc base=utc -fw_cfg name=opt/kos/utc_offset,string=$(UTC_OFFSET) \
 	$(if $(LOG),-fw_cfg name=opt/kos/log$(comma)string=$(subst $(comma),$(comma)$(comma),$(LOG)))
@@ -108,6 +118,7 @@ lldb:
 # The kernel powers off after the last test, printing "test result: ok"
 # or "test result: FAILED"; anything else (a hang you quit) also fails.
 # Sound goes to build/test.wav instead of the speakers.
+test: FWD += tcp:127.0.0.1:$(TEST_HOST_PORT)-:$(TEST_PORT)
 test: | $(DISK)
 	$(MAKE) kos FEATURES="$(FEATURES) test"
 	@rm -f $(BUILD)/test.wav

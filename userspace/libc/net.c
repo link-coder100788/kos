@@ -19,7 +19,7 @@
 #define SVC_NET(sub, a0, a1, a2, a3) SVC_NET5(sub, a0, a1, a2, a3, 0)
 
 enum { HTTP, HTTP_BODY, HTTP_HEADERS, PING, ADDRESS, TCP_CONNECT, TCP_SEND, TCP_RECV, TCP_CLOSE,
-       UDP_OPEN, UDP_SEND, UDP_RECV, UDP_CLOSE };
+       UDP_OPEN, UDP_SEND, UDP_RECV, UDP_CLOSE, TCP_LISTEN, TCP_ACCEPT, TCP_LISTEN_CLOSE };
 
 // The kernel's result for "nothing has arrived yet" (u64::MAX - 1).
 #define KERNEL_NOTHING_YET (-2L)
@@ -142,6 +142,32 @@ long tcp_recv_line(long conn, char* buf, size_t max) {
 
 void tcp_close(long conn) {
     SVC_NET(TCP_CLOSE, conn, 0, 0, 0);
+}
+
+static void format_from(const uint64_t raw[2], udp_from_t* from);
+
+long tcp_listen(int port) {
+    return SVC_NET(TCP_LISTEN, port, 0, 0, 0);
+}
+
+static long tcp_take(long listener, tcp_peer_t* from, int dont_wait) {
+    uint64_t raw[2];
+    long conn = SVC_NET(TCP_ACCEPT, listener, raw, dont_wait, 0);
+    if (conn >= 0 && from) format_from(raw, from);
+    return conn;
+}
+
+long tcp_accept(long listener, tcp_peer_t* from) {
+    return tcp_take(listener, from, 0);
+}
+
+long tcp_try_accept(long listener, tcp_peer_t* from) {
+    long conn = tcp_take(listener, from, 1);
+    return conn == KERNEL_NOTHING_YET ? TCP_NOTHING_YET : conn;
+}
+
+void tcp_listen_close(long listener) {
+    SVC_NET(TCP_LISTEN_CLOSE, listener, 0, 0, 0);
 }
 
 long udp_open(int port) {

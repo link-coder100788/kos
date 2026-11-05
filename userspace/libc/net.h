@@ -79,6 +79,32 @@ long tcp_recv_line(long conn, char* buf, size_t max);
 
 void tcp_close(long conn);
 
+// ---- TCP listening --------------------------------------------------------------
+// A listener is a number too, waiting for connections on one local port.
+// Each connection it accepts is an ordinary connection for the tcp_*
+// calls above. A listener is closed when the program ends, if it hasn't
+// closed it itself.
+
+// Who an accepted connection is from.
+typedef struct {
+    char host[16];    // "10.0.2.2"
+    int port;
+} tcp_peer_t;
+
+// Listens on local port. Returns the listener, or -1 (if the port is
+// already being listened on, say).
+long tcp_listen(int port);
+
+// Waits for a connection. Returns it, or -1. from may be NULL.
+long tcp_accept(long listener, tcp_peer_t* from);
+
+// Like tcp_accept, but doesn't wait: returns TCP_NOTHING_YET if no
+// connection has come in.
+long tcp_try_accept(long listener, tcp_peer_t* from);
+
+// Stops listening; connections that came in but weren't accepted are closed.
+void tcp_listen_close(long listener);
+
 // ---- UDP ---------------------------------------------------------------------------
 // A socket is a number, bound to one local port. Each send is one datagram
 // of at most UDP_MAX_DATAGRAM bytes; datagrams can be lost or arrive out
@@ -89,10 +115,7 @@ void tcp_close(long conn);
 #define UDP_MAX_DATAGRAM 1472
 
 // Where a datagram came from.
-typedef struct {
-    char host[16];    // "10.0.2.2"
-    int port;
-} udp_from_t;
+typedef tcp_peer_t udp_from_t;
 
 // Opens a socket on local port (0 picks a free one). Returns it, or -1.
 long udp_open(int port);

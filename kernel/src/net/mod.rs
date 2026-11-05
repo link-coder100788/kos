@@ -2,10 +2,11 @@
 //!
 //! Everyone else asks it for work through `fetch` / `fetch_with` (HTTP(S)
 //! requests) and `ping`, which return a `Pending` result to poll (the
-//! Browser) or block on (the shell). Plain TCP connections and UDP sockets
-//! (see "TCP connections" and "UDP sockets" below) are for the kernel,
-//! through `std::net::{TcpStream, UdpSocket}`, and for programs, through
-//! the `tcp_*` / `udp_*` calls. The task configures itself over DHCP, then sleeps until a packet
+//! Browser) or block on (the shell). Plain TCP connections, TCP listeners
+//! and UDP sockets (see "TCP connections", "TCP listeners" and "UDP
+//! sockets" below) are for the kernel, through
+//! `std::net::{TcpStream, TcpListener, UdpSocket}`, and for programs,
+//! through the `tcp_*` / `udp_*` calls. The task configures itself over DHCP, then sleeps until a packet
 //! arrives, a smoltcp timer is due, or a new request comes in. Each request
 //! is a small state machine (resolve the host, connect, send, receive), so
 //! one slow request never holds up the others. https:// requests hand
@@ -105,6 +106,7 @@ enum Request {
     Resolve { host: String, slot: Arc<Slot<ResolveResult>> },
     Tcp { conn: Arc<IrqMutex<Conn>>, host: String, port: u16 },
     Udp { sock: Arc<IrqMutex<UdpSock>>, port: u16 },
+    Listen { listener: ListenerRef, port: u16 },
 }
 
 static REQUESTS: IrqMutex<VecDeque<Request>> = IrqMutex::new(VecDeque::new());
@@ -368,7 +370,141 @@ pub fn close_owned_by(owner: TaskId) {
         }
     }
     drop(socks);
+    let mut listeners = LISTENERS.lock();
+    let mine: Vec<ListenerId> = listeners.iter().filter(|(_, l)| l.lock().owner == Some(owner)).map(|(id, _)| *id).collect();
+    for id in mine {
+        if let Some(listener) = listeners.remove(&id) {
+            listener.lock().closing = true;
+        }
+    }
+    drop(listeners);
     kick();
+}
+
+// ---- TCP listeners ----------------------------------------------------------------
+// A listener waits for connections on one local port. The network task
+// keeps a few smoltcp sockets listening there (smoltcp's socket for a
+// connection is the one that was listening), and each one that finishes
+// its handshake becomes an ordinary connection, queued in `accepted` until
+// its user takes it. The kernel holds one as a `ListenerRef` (see
+// std::net::TcpListener); programs get an id, and their listeners are
+// closed when they end.
+
+/// Sockets listening at once: how many handshakes can be under way.
+const LISTEN_BACKLOG: usize = 4;
+/// Connections waiting to be accepted; past this, new ones are refused.
+const ACCEPT_MAX: usize = 16;
+
+pub type ListenerId = u64;
+pub type ListenerRef = Arc<IrqMutex<Listener>>;
+
+pub struct Listener {
+    /// The program it belongs to, if it's a program's.
+    owner: Option<TaskId>,
+    /// The local port, once listening.
+    port: Option<u16>,
+    /// Why it couldn't listen.
+    failed: Option<String>,
+    /// Its user is done with it.
+    closing: bool,
+    accepted: VecDeque<ConnRef>,
+}
+
+/// Listens for TCP connections on local `port` (0 picks a free one).
+pub fn listen_open(port: u16, owner: Option<TaskId>) -> Result<ListenerRef, String> {
+    let listener = Arc::new(IrqMutex::new(Listener {
+        owner,
+        port: None,
+        failed: None,
+        closing: false,
+        accepted: VecDeque::new(),
+    }));
+    request(Request::Listen { listener: listener.clone(), port });
+    wait_for(Wait::Forever, || {
+        let l = listener.lock();
+        l.port.is_some() || l.failed.is_some()
+    });
+    let failed = {
+        let l = listener.lock();
+        match l.port {
+            Some(_) => None,
+            None => Some(l.failed.clone().unwrap_or_else(|| "listener closed".to_string())),
+        }
+    };
+    match failed {
+        None => Ok(listener),
+        Some(why) => {
+            listen_close(&listener);
+            Err(why)
+        }
+    }
+}
+
+/// Takes the next connection that has come in, waiting as `wait` says for
+/// one to. Ok(None) means none has.
+pub fn listen_accept(listener: &IrqMutex<Listener>, wait: Wait) -> Result<Option<ConnRef>, String> {
+    wait_for(wait, || {
+        let l = listener.lock();
+        !l.accepted.is_empty() || l.closing
+    });
+    let mut l = listener.lock();
+    match l.accepted.pop_front() {
+        Some(conn) => Ok(Some(conn)),
+        None if l.closing => Err("listener closed".to_string()),
+        None => Ok(None),
+    }
+}
+
+/// The local port it listens on.
+pub fn listen_port(listener: &IrqMutex<Listener>) -> u16 {
+    listener.lock().port.unwrap_or(0)
+}
+
+/// Stops listening. Connections not yet accepted are closed.
+pub fn listen_close(listener: &IrqMutex<Listener>) {
+    listener.lock().closing = true;
+    kick();
+}
+
+// Programs' listeners, by id.
+
+static LISTENERS: IrqMutex<BTreeMap<ListenerId, ListenerRef>> = IrqMutex::new(BTreeMap::new());
+
+/// The calling program's listener `id`.
+fn own_listener(id: ListenerId) -> Result<ListenerRef, String> {
+    let listener = LISTENERS.lock().get(&id).cloned().ok_or("no such listener")?;
+    if listener.lock().owner != Some(scheduler::current_id()) {
+        return Err("not your listener".to_string());
+    }
+    Ok(listener)
+}
+
+/// Listens for the calling program (see `listen_open`).
+pub fn tcp_listen(port: u16) -> Result<ListenerId, String> {
+    let listener = listen_open(port, Some(scheduler::current_id()))?;
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed) as ListenerId;
+    LISTENERS.lock().insert(id, listener);
+    Ok(id)
+}
+
+/// Accepts a connection on listener `id`, giving it to the calling program.
+/// Returns its id and who it's from.
+pub fn tcp_accept(id: ListenerId, wait: bool) -> Result<Option<(ConnId, Option<SocketAddr>)>, String> {
+    let Some(conn) = listen_accept(&*own_listener(id)?, if wait { Wait::Forever } else { Wait::No })? else {
+        return Ok(None);
+    };
+    let peer = conn.lock().peer;
+    let conn_id = NEXT_ID.fetch_add(1, Ordering::Relaxed) as ConnId;
+    CONNS.lock().insert(conn_id, conn);
+    Ok(Some((conn_id, peer)))
+}
+
+/// Closes listener `id`, if it's the caller's.
+pub fn tcp_listen_close(id: ListenerId) {
+    if let Ok(listener) = own_listener(id) {
+        LISTENERS.lock().remove(&id);
+        listen_close(&listener);
+    }
 }
 
 // ---- UDP sockets ----------------------------------------------------------------
@@ -600,12 +736,21 @@ struct UdpOp {
     sending: Option<(Outgoing, Resolve, u64)>,
 }
 
+struct ListenOp {
+    listener: ListenerRef,
+    /// The port asked for (0 = any).
+    port: u16,
+    /// Sockets listening, or partway through a handshake.
+    sockets: Vec<SocketHandle>,
+}
+
 enum Op {
     Fetch(FetchOp),
     Ping(PingOp),
     Resolve(ResolveOp),
     Tcp(TcpOp),
     Udp(UdpOp),
+    Listen(ListenOp),
 }
 
 struct Stack {
@@ -616,8 +761,10 @@ struct Stack {
     have_dns: bool,
     next_port: u16,
     ping_ident: u16,
-    /// Local ports programs' UDP sockets are bound to.
+    /// Local ports UDP sockets are bound to.
     udp_ports: BTreeSet<u16>,
+    /// Local ports TCP listeners listen on.
+    listen_ports: BTreeSet<u16>,
 }
 
 fn host_literal(host: &str) -> Option<IpAddress> {
@@ -630,9 +777,15 @@ fn host_literal(host: &str) -> Option<IpAddress> {
 }
 
 impl Stack {
+    /// A port for an outgoing connection, or a socket or listener that
+    /// didn't ask for one: one nothing is bound to or listening on.
     fn local_port(&mut self) -> u16 {
-        self.next_port = if self.next_port >= 65000 { 49152 } else { self.next_port + 1 };
-        self.next_port
+        loop {
+            self.next_port = if self.next_port >= 65000 { 49152 } else { self.next_port + 1 };
+            if !self.udp_ports.contains(&self.next_port) && !self.listen_ports.contains(&self.next_port) {
+                return self.next_port;
+            }
+        }
     }
 
     /// Advances name resolution. Ok(Some(addr)) when done.
@@ -964,12 +1117,7 @@ impl Stack {
                     true
                 };
                 let port = match op.port {
-                    0 => loop {
-                        let p = self.local_port();
-                        if !self.udp_ports.contains(&p) {
-                            break p;
-                        }
-                    },
+                    0 => self.local_port(),
                     DHCP_CLIENT_PORT => return fail(op, format!("port {} is DHCP's", DHCP_CLIENT_PORT)),
                     p if self.udp_ports.contains(&p) => return fail(op, format!("port {} is in use", p)),
                     p => p,
@@ -1031,6 +1179,128 @@ impl Stack {
         drop(s);
         if got {
             RESULT_WAIT.wake_all();
+        }
+        false
+    }
+
+    fn listening_socket(&mut self, port: u16) -> Result<SocketHandle, String> {
+        let mut socket = tcp::Socket::new(
+            tcp::SocketBuffer::new(vec![0; 64 * 1024]),
+            tcp::SocketBuffer::new(vec![0; 16 * 1024]),
+        );
+        socket.listen(port).map_err(|e| format!("can't listen on port {}: {:?}", port, e))?;
+        Ok(self.sockets.add(socket))
+    }
+
+    /// Advances a listener: hands over connections that have finished
+    /// their handshake (as new ops, in `spawned`) and keeps enough sockets
+    /// listening. Returns true once it's closed.
+    fn step_listen(&mut self, op: &mut ListenOp, spawned: &mut Vec<Op>, now: u64) -> bool {
+        let closing = op.listener.lock().closing;
+        if closing {
+            for h in op.sockets.drain(..) {
+                self.sockets.get_mut::<tcp::Socket>(h).abort();
+                self.sockets.remove(h);
+            }
+            for conn in core::mem::take(&mut op.listener.lock().accepted) {
+                conn.lock().closing = true;
+            }
+            if let Some(port) = op.listener.lock().port {
+                self.listen_ports.remove(&port);
+                log::debug!("tcp: stopped listening on port {}", port);
+            }
+            RESULT_WAIT.wake_all();
+            return true;
+        }
+        let bound = op.listener.lock().port;
+        let port = match bound {
+            Some(p) => p,
+            None => {
+                let fail = |op: &mut ListenOp, why: String| {
+                    op.listener.lock().failed = Some(why);
+                    RESULT_WAIT.wake_all();
+                    true
+                };
+                let port = match op.port {
+                    0 => self.local_port(),
+                    p if self.listen_ports.contains(&p) => return fail(op, format!("port {} is in use", p)),
+                    p => p,
+                };
+                self.listen_ports.insert(port);
+                op.listener.lock().port = Some(port);
+                log::debug!("tcp: listening on port {}", port);
+                RESULT_WAIT.wake_all();
+                port
+            }
+        };
+        let mut accepted = false;
+        let mut i = 0;
+        while i < op.sockets.len() {
+            let h = op.sockets[i];
+            let socket = self.sockets.get_mut::<tcp::Socket>(h);
+            match socket.state() {
+                tcp::State::Listen | tcp::State::SynReceived => i += 1,
+                // A handshake that went nowhere.
+                tcp::State::Closed => {
+                    self.sockets.remove(h);
+                    op.sockets.swap_remove(i);
+                }
+                // Connected (and maybe already closed by the other side):
+                // from here on it's an ordinary connection.
+                _ => {
+                    op.sockets.swap_remove(i);
+                    let (peer, host) = match socket.remote_endpoint() {
+                        Some(ep) => {
+                            let IpAddress::Ipv4(ip) = ep.addr;
+                            (Some(SocketAddr::V4(SocketAddrV4::new(ip, ep.port))), (ip.to_string(), ep.port))
+                        }
+                        None => (None, (String::new(), 0)),
+                    };
+                    log::debug!("tcp: accepted {}:{} on port {}", host.0, host.1, port);
+                    let mut l = op.listener.lock();
+                    let conn = Arc::new(IrqMutex::new(Conn {
+                        owner: l.owner,
+                        connected: true,
+                        peer,
+                        local_port: port,
+                        ended: None,
+                        closing: false,
+                        rx: VecDeque::new(),
+                        tx: VecDeque::new(),
+                    }));
+                    l.accepted.push_back(conn.clone());
+                    drop(l);
+                    let resolve = match host_literal(&host.0) {
+                        Some(addr) => Resolve::Done(addr),
+                        None => Resolve::NotStarted,
+                    };
+                    spawned.push(Op::Tcp(TcpOp {
+                        conn,
+                        host: host.0,
+                        port: host.1,
+                        resolve,
+                        tcp: Some(h),
+                        deadline: now + REQUEST_TIMEOUT_MS,
+                        close_by: None,
+                    }));
+                    accepted = true;
+                }
+            }
+        }
+        if accepted {
+            RESULT_WAIT.wake_all();
+        }
+        // Keep sockets listening, unless too many connections are waiting
+        // to be accepted: then new ones are refused until some are.
+        let waiting = op.listener.lock().accepted.len();
+        while op.sockets.len() < LISTEN_BACKLOG && waiting + op.sockets.len() < ACCEPT_MAX {
+            match self.listening_socket(port) {
+                Ok(h) => op.sockets.push(h),
+                Err(e) => {
+                    log::warn!("tcp: {}", e);
+                    break;
+                }
+            }
         }
         false
     }
@@ -1184,6 +1454,7 @@ fn start_op(req: Request, now: u64) -> Option<Op> {
             close_by: None,
         })),
         Request::Udp { sock, port } => Some(Op::Udp(UdpOp { sock, port, udp: None, sending: None })),
+        Request::Listen { listener, port } => Some(Op::Listen(ListenOp { listener, port, sockets: Vec::new() })),
     }
 }
 
@@ -1203,6 +1474,10 @@ fn serve_without_device() -> ! {
                 }
                 Request::Udp { sock, .. } => {
                     sock.lock().failed = Some("no network device".to_string());
+                    RESULT_WAIT.wake_all();
+                }
+                Request::Listen { listener, .. } => {
+                    listener.lock().failed = Some("no network device".to_string());
                     RESULT_WAIT.wake_all();
                 }
             }
@@ -1227,7 +1502,7 @@ pub extern "C" fn net_task() -> ! {
     let mut sockets = SocketSet::new(Vec::new());
     let dhcp = sockets.add(dhcpv4::Socket::new());
     let dns = sockets.add(dns::Socket::new(&[], Vec::from([None, None, None, None])));
-    let mut stack = Stack { iface, sockets, dhcp, dns, have_dns: false, next_port: 49152, ping_ident: 0x4b00, udp_ports: BTreeSet::new() };
+    let mut stack = Stack { iface, sockets, dhcp, dns, have_dns: false, next_port: 49152, ping_ident: 0x4b00, udp_ports: BTreeSet::new(), listen_ports: BTreeSet::new() };
     let mut status = Status { device: true, mac, ..Default::default() };
     *STATUS.lock() = Some(status.clone());
 
@@ -1239,13 +1514,21 @@ pub extern "C" fn net_task() -> ! {
         let now = timer::uptime_ms();
         let new_requests = core::mem::take(&mut *REQUESTS.lock());
         ops.extend(new_requests.into_iter().filter_map(|r| start_op(r, now)));
+        let mut spawned = Vec::new();
         ops.retain_mut(|op| !match op {
             Op::Fetch(f) => stack.step_fetch(f, now),
             Op::Ping(p) => stack.step_ping(p, now),
             Op::Resolve(r) => stack.step_resolve(r, now),
             Op::Tcp(t) => stack.step_tcp(t, now),
             Op::Udp(u) => stack.step_udp(u, now),
+            Op::Listen(l) => stack.step_listen(l, &mut spawned, now),
         });
+        // Accepted connections start moving bytes right away.
+        spawned.retain_mut(|op| match op {
+            Op::Tcp(t) => !stack.step_tcp(t, now),
+            _ => true,
+        });
+        ops.extend(spawned);
         // Send whatever the requests just queued.
         stack.iface.poll(smol_now(), &mut device, &mut stack.sockets);
 

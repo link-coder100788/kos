@@ -50,6 +50,7 @@ Options are passed as make variables:
 | `DISK`     | `disk.img`        | Disk image to attach.                                                    |
 | `UTC_OFFSET` | this computer's (`date +%z`) | Time zone for the taskbar clock, e.g. `+0100`. The clock chip itself runs in UTC. |
 | `AUDIO`    | `coreaudio` / `pa` | QEMU audio backend for the sound device: your speakers on macOS / Linux. `AUDIO=none` for silence, `AUDIO="wav,path=out.wav"` to record. `make test` always records to `build/test.wav`. |
+| `FWD`      | (empty)           | Ports on your computer passed through to KOS, as QEMU `hostfwd` rules separated by spaces: `FWD="tcp::8080-:80"` makes your computer's `localhost:8080` reach KOS's port 80. |
 
 ## Using KOS
 
@@ -127,6 +128,8 @@ make kai           # kai-train, then kai-upload
 ### The network
 
 QEMU gives KOS a virtual Ethernet card and routes its traffic through your computer's connection (wifi or wired), so KOS can reach the internet. KOS configures itself with DHCP: it gets `10.0.2.15`, and your computer is reachable from inside KOS as `10.0.2.2`. To serve your own files to the Browser, run a web server on your computer, for example `python3 -m http.server 8000` in a folder, then open `http://10.0.2.2:8000/` in KOS.
+
+The other way round, KOS can listen for connections, but QEMU only lets them in on ports you forward. Start KOS with, say, `make run-gui FWD="tcp::9000-:9000"`, run `nc -l 9000` in KOS, and `nc localhost 9000` on your computer: lines typed on either side show up on the other.
 
 ### Sound
 
@@ -253,7 +256,7 @@ Programs are freestanding: they start at `_start`, must call `exit()`, and use K
 | `stdlib.h` | `malloc`/`calloc`/`realloc`, `strtol`/`strtod`/`atoi`, `qsort`/`bsearch`, `rand` |
 | `math.h` | `sin cos tan asin acos atan atan2 exp log log10 pow sqrt hypot floor ceil round fmod`..., written from scratch (`math.c` explains how) |
 | `time.h` | `time`, `localtime`, `gmtime`, `mktime`, `strftime` |
-| `net.h` | HTTP and HTTPS requests (any method, headers and body), `ping`, TCP connections and UDP sockets |
+| `net.h` | HTTP and HTTPS requests (any method, headers and body), `ping`, TCP connections (out, and listening for them coming in) and UDP sockets |
 | `crypto.h` | SHA-256, SHA-512, HMAC-SHA256 and AES-256-GCM, done by the kernel; `crypto_equal` for comparing MACs |
 | `canvas.h` | Windows you draw pixels into, for graphics and games |
 | `render3d.h` | A software 3D renderer for canvases: a camera, shapes, terrain, lighting and fog, with a depth buffer |
@@ -314,6 +317,9 @@ Under the library, a program talks to the kernel with `svc #n`, where `n` picks 
 | | 10 | id, to (`{host, port}`), data, len → 0 | `udp_send`, `udp_send_str` |
 | | 11 | id, buf, max, from (`{IPv4 address, port}`, may be null), don't wait → datagram length; -2 nothing yet | `udp_recv`, `udp_try_recv` |
 | | 12 | id → | `udp_close` |
+| | 13 | port → listener id | `tcp_listen` |
+| | 14 | id, from (`{IPv4 address, port}`, may be null), don't wait → connection id; -2 nothing yet | `tcp_accept`, `tcp_try_accept` |
+| | 15 | id → | `tcp_listen_close` |
 | 13 processes | 0 | path, args → task id | `spawn` |
 | | 1 | id → 0 once it has ended | `proc_wait`, `run_program` |
 | | 2 | id → 0 | `proc_kill` |
@@ -384,7 +390,7 @@ kos:/k> k run out.kbin
 - **Memory:** the kernel runs in the higher half (`0xFFFF_FF80_0000_0000` + physical) through TTBR1, with separate permissions for code, read-only data and writable data. The low half (TTBR0) is the running program's own address space (see Programs below). The kernel heap (a free-list allocator that merges freed blocks) and the page frames share all the RAM above the kernel, with no fixed split: the heap starts at 32 MiB and grows upward into free memory when it runs out (and shrinks back when the end of it is free again), while page frames, for page tables and programs, are handed out from the top of RAM down. So the Browser can use most of the 512 MiB, or programs can.
 - **Tasks:** each core that runs tasks has its own preemptive round-robin scheduler, with 10 ms time slices: core 0 runs the kernel's tasks (shell, filesystem, network, UI), and cores 3 and 4 run programs, each new one going to whichever has fewer. (Core 1 runs `std::thread` work and core 2 async work, outside any scheduler.) Tasks block on wait queues until an interrupt or another task wakes them, and waking a task on another core sends that core an interrupt (a GIC SGI) so it switches right away. A core sleeps (`wfi`) when nothing is ready. Every switch saves the full register state, including floating-point/SIMD registers.
 - **Drivers:** interrupts come through a GICv2. The PL011 UART, virtio-blk and virtio-net raise interrupts; virtio-input provides the keyboard and tablet; the screen is a framebuffer shown through virtio-gpu (2D), or QEMU's ramfb if there's no GPU (`make run-gui DISPLAY_DEV=ramfb`); the PL031 real-time clock gives the date and time (in UTC, with the host's time zone passed in at boot).
-- **Network:** a network task owns the virtio-net device and the smoltcp TCP/IP stack. It configures itself over DHCP and handles DNS lookups, HTTP requests and pings for the rest of the kernel, and TCP connections and UDP sockets for programs, each as a small state machine so they don't block each other. HTTPS runs TLS 1.3 (`embedded-tls`) in a separate `tls` task, keyed by the kernel's random number generator (ChaCha20, seeded and reseeded from the CPU's hardware one, `RNDR`), with the network task carrying its encrypted bytes.
+- **Network:** a network task owns the virtio-net device and the smoltcp TCP/IP stack. It configures itself over DHCP and handles DNS lookups, HTTP requests and pings for the rest of the kernel, and TCP connections (outgoing, and incoming through listeners) and UDP sockets for programs, each as a small state machine so they don't block each other. HTTPS runs TLS 1.3 (`embedded-tls`) in a separate `tls` task, keyed by the kernel's random number generator (ChaCha20, seeded and reseeded from the CPU's hardware one, `RNDR`), with the network task carrying its encrypted bytes.
 - **Browser:** pages are rendered by [lighthouse](kernel/crates/lighthouse), a small HTML/CSS engine ported to `no_std`: parse, style, lay out (with word wrapping), then paint into a display list. The Browser keeps only that list and draws just the part in view. It draws images and form fields itself, as boxes lighthouse leaves room for.
 - **K-AI:** the `kai` crate (`kernel/crates/kai`) runs the model, a tokenizer and transformer written to match the PyTorch original exactly. `kernel/src/assistant` loads it from the disk and turns what it understood into actions.
 - **Desktop:** a compositor in the UI task draws windows into a back buffer and copies only the changed regions to the screen. Each window's contents come from an `App`. Programs talk to it through syscalls.
@@ -417,7 +423,7 @@ kernel/
     shell/             the shell: line input, commands
     ui/                compositor + window manager (wm.rs), apps/, drawing (gfx.rs), console mirror
     k/                 the K compiler (lexer → parser → typecheck → IR → AArch64 → KBIN)
-    std/               in-kernel std: locks, Rc/RefCell, hash map, channels, threads, io::{Read, Write}, net::{TcpStream, UdpSocket}
+    std/               in-kernel std: locks, Rc/RefCell, hash map, channels, threads, io::{Read, Write}, net::{TcpStream, TcpListener, UdpSocket}
 userspace/
   libc/                the C library: syscalls (sys.h), printf (print/print.h), canvases (canvas.h), maths (math.h)
   prog/                programs; every .c / .s file here is built and put on the disk

@@ -602,9 +602,12 @@ mod net {
     pub const UDP_SEND: u64 = 10;    // (id, to*, data, len) -> 0
     pub const UDP_RECV: u64 = 11;    // (id, buf, max, from*, dont_wait) -> bytes read; u64::MAX - 1 = nothing yet
     pub const UDP_CLOSE: u64 = 12;   // (id)
+    pub const TCP_LISTEN: u64 = 13;  // (port) -> listener id
+    pub const TCP_ACCEPT: u64 = 14;  // (id, from*, dont_wait) -> connection id; u64::MAX - 1 = nothing yet
+    pub const TCP_LISTEN_CLOSE: u64 = 15; // (id)
 
     const_unique!(HTTP, HTTP_BODY, HTTP_HEADERS, PING, ADDRESS, TCP_CONNECT, TCP_SEND, TCP_RECV, TCP_CLOSE,
-        UDP_OPEN, UDP_SEND, UDP_RECV, UDP_CLOSE);
+        UDP_OPEN, UDP_SEND, UDP_RECV, UDP_CLOSE, TCP_LISTEN, TCP_ACCEPT, TCP_LISTEN_CLOSE);
 }
 
 /// What a program passes for an HTTP request (libc's `http_request_t`):
@@ -614,8 +617,20 @@ const HTTP_REQUEST_SIZE: usize = 5 * 8;
 
 /// Where a datagram goes or came from (libc's `udp_addr_t`): a pointer to
 /// a NUL-terminated host going out, and the IPv4 address (as a big-endian
-/// number) coming in; then the port.
+/// number) coming in; then the port. An accepted connection's peer comes
+/// in the same way.
 const UDP_ADDR_SIZE: usize = 2 * 8;
+
+/// Writes `addr` where a program asked for it (see UDP_ADDR_SIZE); `to`
+/// was checked already, and may be null.
+fn write_peer(to: *mut u64, addr: Option<core::net::SocketAddr>) {
+    if let (false, Some(core::net::SocketAddr::V4(a))) = (to.is_null(), addr) {
+        unsafe {
+            to.write(u32::from(*a.ip()) as u64);
+            to.add(1).write(a.port() as u64);
+        }
+    }
+}
 
 #[syscall(12)]
 pub fn syscall_net(frame: &mut SyscallContext) {
@@ -726,12 +741,7 @@ pub fn syscall_net(frame: &mut SyscallContext) {
             else { frame[0] = fail("bad address"); return };
             match crate::net::udp_recv(id, !dont_wait) {
                 Ok(Some(d)) => {
-                    if let (false, core::net::SocketAddr::V4(sender)) = (from.is_null(), d.from) {
-                        unsafe {
-                            from.write(u32::from(*sender.ip()) as u64);
-                            from.add(1).write(sender.port() as u64);
-                        }
-                    }
+                    write_peer(from, Some(d.from));
                     // A datagram longer than the buffer is cut short.
                     let n = d.data.len().min(buf.len());
                     buf[..n].copy_from_slice(&d.data[..n]);
@@ -743,6 +753,27 @@ pub fn syscall_net(frame: &mut SyscallContext) {
         }
         net::UDP_CLOSE => {
             crate::net::udp_close(frame[0]);
+            0
+        }
+        net::TCP_LISTEN => {
+            let Ok(port) = u16::try_from(frame[0]) else { frame[0] = fail("bad port"); return };
+            crate::net::tcp_listen(port).unwrap_or_else(|e| fail(&e))
+        }
+        net::TCP_ACCEPT => {
+            let (id, from, dont_wait) = (frame[0], frame[1], frame[2] != 0);
+            let Some(from) = (from == 0 || user_ok(frame, from, UDP_ADDR_SIZE, 8)).then_some(from as *mut u64)
+            else { frame[0] = fail("bad address"); return };
+            match crate::net::tcp_accept(id, !dont_wait) {
+                Ok(Some((conn, peer))) => {
+                    write_peer(from, peer);
+                    conn
+                }
+                Ok(None) => u64::MAX - 1,
+                Err(e) => fail(&e),
+            }
+        }
+        net::TCP_LISTEN_CLOSE => {
+            crate::net::tcp_listen_close(frame[0]);
             0
         }
         _ => { log::warn!("net syscall: unknown sub-command {}", syscall_num); u64::MAX }

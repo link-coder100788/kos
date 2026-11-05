@@ -1,24 +1,29 @@
-//! std::net for the kernel: `TcpStream` and `UdpSocket`, with std's names,
+//! std::net for the kernel: `TcpStream`, `TcpListener` and `UdpSocket`, with std's names,
 //! signatures and behaviour, on top of the network task (crate::net).
 //!
 //! ```ignore
 //! use crate::std::io::{Read, Write};
-//! use crate::std::net::{TcpStream, UdpSocket};
+//! use crate::std::net::{TcpListener, TcpStream, UdpSocket};
 //!
 //! let mut stream = TcpStream::connect("example.com:80")?;
 //! stream.write_all(b"GET / HTTP/1.0\r\nHost: example.com\r\n\r\n")?;
 //! let mut reply = Vec::new();
 //! stream.read_to_end(&mut reply)?;
 //!
+//! let listener = TcpListener::bind("0.0.0.0:8080")?;
+//! for stream in listener.incoming() {
+//!     stream?.write_all(b"hello\n")?;
+//! }
+//!
 //! let socket = UdpSocket::bind("0.0.0.0:0")?;
 //! socket.send_to(&query, ("10.0.2.3", 53))?;
 //! let (n, from) = socket.recv_from(&mut buf)?;
 //! ```
 //!
-//! Differences from std: IPv4 only; there's no TcpListener (the network task
-//! only makes outgoing connections) or `shutdown`; a UdpSocket binds a port
-//! on every interface whatever address it's given; and a read that times
-//! out fails with `ErrorKind::TimedOut`. A datagram is at most
+//! Differences from std: IPv4 only; there's no `shutdown`; a UdpSocket or
+//! TcpListener binds a port on every interface whatever address it's
+//! given; and a read (or accept) that times out fails with
+//! `ErrorKind::TimedOut`. A datagram is at most
 //! `UDP_MAX_DATAGRAM` bytes. Sockets close when dropped.
 
 use alloc::format;
@@ -27,7 +32,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 use crate::arch::timer;
-use crate::net::{self as kernel_net, ConnRef, SockRef, Wait};
+use crate::net::{self as kernel_net, ConnRef, ListenerRef, SockRef, Wait};
 use crate::std::io::{self, Error, ErrorKind, Read, Write};
 use crate::std::lock::irq_mutex::IrqMutex;
 
@@ -303,6 +308,73 @@ impl Write for TcpStream {
 impl Drop for TcpStream {
     fn drop(&mut self) {
         kernel_net::conn_close(&self.conn);
+    }
+}
+
+/// Listens for TCP connections. Closed when dropped, along with any
+/// connections that came in but weren't accepted.
+pub struct TcpListener {
+    listener: ListenerRef,
+    options: ReadOptions,
+}
+
+impl TcpListener {
+    /// Listens on `addr`'s port (0 picks a free one).
+    pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<TcpListener> {
+        each_addr(addr, |a| {
+            let listener = kernel_net::listen_open(a.port(), None).map_err(error)?;
+            Ok(TcpListener { listener, options: ReadOptions::new() })
+        })
+    }
+
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        Ok(SocketAddr::V4(SocketAddrV4::new(our_ip(), kernel_net::listen_port(&self.listener))))
+    }
+
+    /// Waits for a connection; returns it and who it's from.
+    pub fn accept(&self) -> io::Result<(TcpStream, SocketAddr)> {
+        let Some(conn) = kernel_net::listen_accept(&self.listener, self.options.wait()).map_err(error)? else {
+            return Err(self.options.nothing());
+        };
+        let stream = TcpStream { conn, options: ReadOptions::new() };
+        let peer = stream.peer_addr()?;
+        Ok((stream, peer))
+    }
+
+    /// Accepts connections, one per step. Never ends.
+    pub fn incoming(&self) -> Incoming<'_> {
+        Incoming { listener: self }
+    }
+
+    /// Makes `accept` fail with `WouldBlock` instead of waiting.
+    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        self.options.nonblocking.store(nonblocking, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Not in std: makes `accept` give up (with `TimedOut`) after `dur`;
+    /// None waits forever.
+    pub fn set_accept_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        self.options.set_timeout(dur)
+    }
+}
+
+impl Drop for TcpListener {
+    fn drop(&mut self) {
+        kernel_net::listen_close(&self.listener);
+    }
+}
+
+/// See `TcpListener::incoming`.
+pub struct Incoming<'a> {
+    listener: &'a TcpListener,
+}
+
+impl Iterator for Incoming<'_> {
+    type Item = io::Result<TcpStream>;
+
+    fn next(&mut self) -> Option<io::Result<TcpStream>> {
+        Some(self.listener.accept().map(|(stream, _)| stream))
     }
 }
 
