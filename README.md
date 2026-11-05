@@ -34,6 +34,7 @@ make disk       # rebuild disk.img from scratch (discards changes made from insi
 make user       # just build the userspace programs into build/user/
 make kai        # retrain K-AI and put the new model on disk.img (see "K-AI" below)
 make            # just build build/kos.bin
+make doc        # the kernel's API docs (rustdoc) in target/aarch64-unknown-none/doc/; OPEN=1 opens them
 make clean
 ```
 

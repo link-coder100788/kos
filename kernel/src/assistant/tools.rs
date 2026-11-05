@@ -451,7 +451,7 @@ fn problems<'a>(records: &[&'a Snapshot]) -> Vec<Problem<'a>> {
     out
 }
 
-/// K-AI's answer to "what went wrong (with <topic>)?". `text` is what was
+/// K-AI's answer to "what went wrong (with \<topic\>)?". `text` is what was
 /// typed: when the model found no topic, a part of KOS named anywhere in
 /// it is the topic (the model misses topics in words it hasn't seen).
 fn what_went_wrong(topic: Option<&str>, text: &str) -> String {

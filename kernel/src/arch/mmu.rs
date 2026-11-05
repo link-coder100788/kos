@@ -10,7 +10,7 @@
 //! ```
 //!
 //! TTBR1 (addresses 0xFFFF_FF80_...) holds the kernel, TTBR0 the low half.
-//! The mapper works the same for both: only VA bits [38:12] matter to the
+//! The mapper works the same for both: only VA bits \[38:12\] matter to the
 //! walk.
 //!
 //! Every program has its own TTBR0 table, tagged with an ASID (address

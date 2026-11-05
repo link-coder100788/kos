@@ -1,6 +1,6 @@
 //! 8x8 bitmap font for ASCII (U+0000..U+007F).
 //!
-//! From font8x8_basic.h by Daniel Hepper (https://github.com/dhepper/font8x8),
+//! From font8x8_basic.h by Daniel Hepper (<https://github.com/dhepper/font8x8>),
 //! based on Marcel Sondaar's and IBM's public domain VGA fonts. Public domain.
 //!
 //! Each glyph is 8 rows; in each row byte the least significant bit is the

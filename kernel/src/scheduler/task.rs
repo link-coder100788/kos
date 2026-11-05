@@ -27,7 +27,7 @@ const_assert!(core::mem::offset_of!(TrapFrame, q) == 304, "TrapFrame layout must
 const SPSR_EL1H: u64 = 0x5;
 /// EL0t: user mode, all interrupts unmasked.
 const SPSR_EL0T: u64 = 0x0;
-/// SPSR.M[3:0], the exception level and stack the frame returns to.
+/// SPSR.M\[3:0\], the exception level and stack the frame returns to.
 const SPSR_MODE: u64 = 0xf;
 
 impl TrapFrame {

@@ -105,7 +105,7 @@ pub fn ldrsw(rn: u32, rt: u32) -> u32 { ldst_unsigned_off0(0b10, 0b10, rn, rt) }
 pub fn ldrsh(rn: u32, rt: u32) -> u32 { ldst_unsigned_off0(0b01, 0b10, rn, rt) } // sign-extend 16->64
 pub fn ldrsb(rn: u32, rt: u32) -> u32 { ldst_unsigned_off0(0b00, 0b10, rn, rt) } // sign-extend 8->64
 
-/// STR Xt, [SP, #-16]!  (pre-index, push)
+/// `STR Xt, [SP, #-16]!`  (pre-index, push)
 pub fn push_x(rt: u32) -> u32 {
     let imm9 = (-16i32) & 0x1FF;
     (0b11 << 30) | (0b111 << 27) | (0 << 26) | (0b00 << 24) | (0b00 << 22) | ((imm9 as u32) << 12) | (0b11 << 10) | (SP << 5) | rt
@@ -119,7 +119,7 @@ pub fn pop_x(rt: u32) -> u32 {
 /// ADD SP, SP, #imm12  (drop n*16 bytes; imm must be multiple of 16, <=4095)
 pub fn add_sp_imm(imm12: u32) -> u32 { add_imm(SP, SP, imm12) }
 
-/// STP X_t1, X_t2, [SP, #-16]!
+/// `STP X_t1, X_t2, [SP, #-16]!`
 pub fn stp_pre(rt1: u32, rt2: u32, rn: u32, imm7_words: i32) -> u32 {
     let imm7 = (imm7_words as u32) & 0x7F;
     (0b10 << 30) | (0b101 << 27) | (0 << 26) | (0b011 << 23) | (0 << 22) | (imm7 << 15) | (rt2 << 10) | (rn << 5) | rt1

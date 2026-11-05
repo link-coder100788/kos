@@ -104,7 +104,7 @@ impl ToSocketAddrs for (Ipv4Addr, u16) {
 }
 
 /// Looks up the IPv4 address of a host name, or of the host in a URL
-/// ("example.com", "example.com:8080", "https://example.com/page"), waiting
+/// (`"example.com"`, `"example.com:8080"`, `"https://example.com/page"`), waiting
 /// for the answer. An address is returned as it is.
 pub fn lookup_host(name: &str) -> io::Result<Ipv4Addr> {
     let url = kernel_net::Url::parse(name).map_err(|e| Error::new(ErrorKind::InvalidInput, e))?;

@@ -36,7 +36,7 @@ impl Generator {
 /// Seeded on first use.
 static GENERATOR: IrqMutex<Option<Generator>> = IrqMutex::new(None);
 
-/// Whether this CPU has `RNDR`: ID_AA64ISAR0_EL1 bits [63:60] are nonzero.
+/// Whether this CPU has `RNDR`: ID_AA64ISAR0_EL1 bits \[63:60\] are nonzero.
 pub fn available() -> bool {
     let isar0: u64;
     unsafe { asm!("mrs {0}, id_aa64isar0_el1", out(reg) isar0); }
