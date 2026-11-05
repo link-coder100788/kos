@@ -364,7 +364,7 @@ Assembly (`.s`) files in `userspace/prog/` work the same way.
 
 ### Games
 
-Each folder in `games/` is a game, built from all of its `.c` and `.s` files (linked with the libc) into one program named after the folder: `make games` builds them, and `make disk` puts each on the disk as `/games/<name>.elf`, so `games/powder/` is `run /games/powder.elf`. There are two so far: Glowfly (`games/glowfly/`), a one-button firefly game, and Powder Run (`games/powder/`), a 3D downhill ski game drawn with `render3d.h`. Each folder's README says how to play.
+Each folder in `games/` is a game, built from all of its `.c` and `.s` files (linked with the libc) into one program named after the folder: `make games` builds them, and `make disk` puts each on the disk as `/games/<name>.elf`, so `games/powder/` is `run /games/powder.elf`. There are four so far: Glowfly (`games/glowfly/`), a one-button firefly game; Powder Run (`games/powder/`), a 3D downhill ski game drawn with `render3d.h`; Updraft (`games/updraft/`), a 3D paper glider in a desert canyon, also on `render3d.h`; and Sandbox (`games/sandbox/`), a falling-sand toy of sand, water, oil, fire, lava and more. Each folder's README says how to play.
 
 ### System commands
 
