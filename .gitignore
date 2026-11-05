@@ -10,3 +10,5 @@ disk/images/
 ._*
 # personal media for the local disk image
 disk/files/files2/
+# Python bytecode
+__pycache__/
