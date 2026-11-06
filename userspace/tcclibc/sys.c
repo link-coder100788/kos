@@ -1,7 +1,8 @@
 #include "sys.h"
 #include "syscall.h"
 
-__attribute__((noreturn)) void exit(void) {
+__attribute__((noreturn)) void exit(int status) {
+    (void)status;
     KOS_SVC(0x0, 0, 0, 0, 0, 0, 0);
     __builtin_unreachable();
 }

@@ -15,6 +15,7 @@
 #   make tcc-libs   build the libraries programs compiled by tcc link with
 #                   (build/tcc-libs/libkos.a and libtcc1.a)
 #   make tcc-progs  build userspace/tcc/*.c with tcc into build/tcc-libs/prog/
+#   make tcc-kos    build tcc itself for KOS: build/tcc-libs/bin/tcc.elf
 #   make disk       (re)build disk.img from disk/ + the userspace programs
 #                   (into /programs), the system commands (into /bin) and
 #                   the games (into /games), discarding anything written to
@@ -91,7 +92,7 @@ QEMU = qemu-system-aarch64 \
 	-rtc base=utc -fw_cfg name=opt/kos/utc_offset,string=$(UTC_OFFSET) \
 	$(if $(LOG),-fw_cfg name=opt/kos/log$(comma)string=$(subst $(comma),$(comma)$(comma),$(LOG)))
 
-.PHONY: all kernel kos run run-gui debug lldb test doc package user games tcc-libs tcc-progs disk kai kai-setup kai-train kai-upload digit-setup digit-train digit-upload clean FORCE
+.PHONY: all kernel kos run run-gui debug lldb test doc package user games tcc-libs tcc-progs tcc-kos disk kai kai-setup kai-train kai-upload digit-setup digit-train digit-upload clean FORCE
 
 all: kos
 
@@ -229,10 +230,12 @@ $(GAME_OUT)/disk/games/%.elf: $(GAME_OUT)/debug/%.elf | $(GAME_OUT)/disk/games
 # TinyCC (vendored in tools/tinycc) compiles programs on KOS itself. They
 # link with userspace/tcclibc, a copy of the C library that tcc can build:
 # its syscall wrappers all call kos_syscall (syscall.S) instead of using
-# inline asm, which tcc can't compile, so tcc builds it into libkos.a and
+# inline asm, which tcc can't compile, so tcc builds it into libc.a and
 # nothing it links was made by clang. libtcc1.a is tcc's own helpers
 # (128-bit long double, atomics...). Both archives are made by tcc's
 # archiver, `tcc -ar`, whose format tcc reads (macOS's ar writes another).
+# crt1.o, crti.o and crtn.o (tcclibc/crt) are the start files tcc links
+# into every program it builds on KOS.
 
 TCC_DIR   := tools/tinycc
 # The cross compiler: runs on this computer, makes arm64 ELF code.
@@ -240,11 +243,13 @@ TCC_X     := $(TCC_DIR)/arm64-tcc
 TCC_OUT   := $(BUILD)/tcc-libs
 # KOS's headers, then tcc's (stdarg.h, stddef.h...), none of this computer's.
 TCC_INC   := -nostdinc -I userspace/tcclibc -I $(TCC_DIR)/include
-TCC_LIBC_SRC := $(wildcard userspace/tcclibc/*.c userspace/tcclibc/*/*.c userspace/tcclibc/*.S)
+TCC_LIBC_SRC := $(filter-out userspace/tcclibc/crt/%,$(wildcard userspace/tcclibc/*.c userspace/tcclibc/*/*.c userspace/tcclibc/*.S))
 TCC_LIBC_H   := $(wildcard userspace/tcclibc/*.h userspace/tcclibc/*/*.h)
 TCC_LIBC_OBJS := $(patsubst userspace/tcclibc/%,$(TCC_OUT)/obj/%.o,$(basename $(TCC_LIBC_SRC)))
+TCC_CRT    := $(TCC_OUT)/crt1.o $(TCC_OUT)/crti.o $(TCC_OUT)/crtn.o
+TCC_LIBS   := $(TCC_OUT)/libc.a $(TCC_OUT)/libtcc1.a
 
-tcc-libs: $(TCC_OUT)/libkos.a $(TCC_OUT)/libtcc1.a
+tcc-libs: $(TCC_LIBS) $(TCC_CRT)
 
 # tcc's own Makefile knows when the compiler or its libtcc1 is out of date;
 # `cross-arm64` brings both up to date.
@@ -260,7 +265,11 @@ $(TCC_OUT)/obj/%.o: userspace/tcclibc/%.S $(TCC_X)
 	@mkdir -p $(@D)
 	$(TCC_X) -c $< -o $@
 
-$(TCC_OUT)/libkos.a: $(TCC_LIBC_OBJS) $(TCC_X)
+$(TCC_OUT)/crt%.o: userspace/tcclibc/crt/crt%.c $(TCC_LIBC_H) $(TCC_X)
+	@mkdir -p $(@D)
+	$(TCC_X) $(TCC_INC) -Wall -c $< -o $@
+
+$(TCC_OUT)/libc.a: $(TCC_LIBC_OBJS) $(TCC_X)
 	rm -f $@
 	$(TCC_X) -ar rcs $@ $(TCC_LIBC_OBJS)
 
@@ -277,9 +286,26 @@ TCC_PROGS  := $(patsubst userspace/tcc/%.c,$(TCC_OUT)/prog/%.elf,$(wildcard user
 
 tcc-progs: $(TCC_PROGS)
 
-$(TCC_OUT)/prog/%.elf: userspace/tcc/%.c $(TCC_LIBC_H) $(TCC_OUT)/libkos.a $(TCC_OUT)/libtcc1.a
+$(TCC_OUT)/prog/%.elf: userspace/tcc/%.c $(TCC_LIBC_H) $(TCC_LIBS)
 	@mkdir -p $(@D)
-	$(TCC_X) $(TCC_CFLAGS) -o $@ $< $(TCC_OUT)/libkos.a $(TCC_OUT)/libtcc1.a
+	$(TCC_X) $(TCC_CFLAGS) -o $@ $< $(TCC_LIBS)
+
+# tcc itself, for KOS: built by the cross compiler against tcclibc, with
+# CONFIG_TCC_KOS for the "KOS patch" changes in tools/tinycc (no -run,
+# programs linked at USER_BASE and always static). On KOS it finds its own
+# headers and libraries in /lib/tcc ({B}) and tcclibc's headers in /include.
+TCC_KOS_DEFS := -DONE_SOURCE=1 -DTCC_TARGET_ARM64=1 -DCONFIG_TCC_KOS -DCONFIG_TCC_STATIC \
+	-DCONFIG_TCC_BACKTRACE=0 -DCONFIG_TCC_BCHECK=0 -DCONFIG_TCC_SEMLOCK=0 \
+	-DCONFIG_TCCDIR='"/lib/tcc"' -DCONFIG_TCC_SYSINCLUDEPATHS='"/include:{B}/include"' \
+	-DCONFIG_TCC_LIBPATHS='"{B}"' -DCONFIG_TCC_CRTPREFIX='"{B}"' -DCONFIG_TCC_ELFINTERP='"-"'
+TCC_KOS    := $(TCC_OUT)/bin/tcc.elf
+
+tcc-kos: $(TCC_KOS)
+
+$(TCC_KOS): $(wildcard $(TCC_DIR)/*.c $(TCC_DIR)/*.h) $(TCC_LIBC_H) $(TCC_LIBS) $(TCC_CRT)
+	@mkdir -p $(@D)
+	$(TCC_X) $(TCC_CFLAGS) -I $(TCC_DIR) $(TCC_KOS_DEFS) -o $@ \
+		$(TCC_OUT)/crt1.o $(TCC_DIR)/tcc.c $(TCC_LIBS)
 
 FORCE:
 

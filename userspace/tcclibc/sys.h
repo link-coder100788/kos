@@ -1,17 +1,15 @@
 #ifndef C_SYS_H
 #define C_SYS_H
 
-// The KOS C library: thin wrappers around the kernel's syscalls.
+// The KOS C library for programs tcc builds (tcclibc): a copy of
+// userspace/libc whose syscalls all go through kos_syscall (syscall.h),
+// since tcc can't compile the inline asm the original uses.
 //
-// Programs are freestanding (-ffreestanding -nostdlib), start at
-// `void _start(void)`, and must end with exit(). Build them by dropping a
-// .c file in userspace/prog/ and running `make disk`; run them with
-// `run <name>.elf.b64` in the shell (which waits for them), `bg` (in the
-// background, without the console) or from the Programs window.
-//
-// System commands (grep, ...) go in userspace/cmd/ instead: they end up in
-// /bin on the disk, out of the Programs window, and the shell runs one
-// when you type its name: `grep main notes.txt`.
+// Programs built by /bin/tcc on KOS start at `int main(int argc, char**
+// argv)` (crt1.c calls it, then exit() with what it returns); with
+// -nostartfiles, or from `make tcc-progs`, they start at `void
+// _start(void)` and must end with exit(0) themselves. Run them with
+// `run <name>.elf`.
 //
 // This header is the kernel's side of things. The rest of the library is
 // ordinary C on top of it: string.h, ctype.h, stdlib.h (malloc, strtol,
@@ -55,8 +53,8 @@
 
 // ---- process -------------------------------------------------------------
 
-// Ends the program.
-__attribute__((noreturn)) void exit(void);
+// Ends the program. KOS has no exit statuses yet, so `status` is ignored.
+__attribute__((noreturn)) void exit(int status);
 
 // Gives the rest of this time slice to other tasks.
 void yield(void);

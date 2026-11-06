@@ -44,6 +44,11 @@ double ceil(double x);
 double round(double x);
 double trunc(double x);
 
+// x * 2^e.
+double ldexp(double x, int e);
+// ldexp, in double precision.
+long double ldexpl(long double x, int e);
+
 // The remainder of x / y, with x's sign.
 double fmod(double x, double y);
 

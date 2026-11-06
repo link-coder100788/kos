@@ -889,6 +889,10 @@ LIBTCCAPI TCCState *tcc_new(void)
 #ifdef CHAR_IS_UNSIGNED
     s->char_is_unsigned = 1;
 #endif
+#ifdef CONFIG_TCC_KOS
+    /* KOS patch: KOS has no shared libraries, so always link statically. */
+    s->static_link = 1;
+#endif
 #ifdef TCC_TARGET_I386
     s->seg_size = 32;
 #endif

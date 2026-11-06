@@ -2,7 +2,7 @@
 #define C_STDLIB_H
 
 // Memory, number parsing, sorting and random numbers. (exit() is in
-// sys.h, and takes no status: `exit();`.)
+// sys.h.)
 
 #include <stddef.h>
 #include "sys.h"
@@ -27,9 +27,18 @@ unsigned long strtoul(const char* s, char** end, int base);
 long long strtoll(const char* s, char** end, int base);
 unsigned long long strtoull(const char* s, char** end, int base);
 double strtod(const char* s, char** end);
+// strtod, then made a float / long double (so only double's precision).
+float strtof(const char* s, char** end);
+long double strtold(const char* s, char** end);
 int atoi(const char* s);
 long atol(const char* s);
 double atof(const char* s);
+
+// KOS has no environment variables: always NULL.
+char* getenv(const char* name);
+// KOS paths have no links to resolve, so this copies `path` into
+// `resolved` (PATH_MAX bytes), or into fresh memory if that's NULL.
+char* realpath(const char* path, char* resolved);
 
 // Sorts n things of `size` bytes with compare (negative, 0, positive).
 void qsort(void* base, size_t n, size_t size, int (*compare)(const void*, const void*));

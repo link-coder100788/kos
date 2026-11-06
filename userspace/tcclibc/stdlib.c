@@ -117,6 +117,23 @@ double strtod(const char* s, char** end) {
 
 double atof(const char* s) { return strtod(s, NULL); }
 
+float strtof(const char* s, char** end) { return (float)strtod(s, end); }
+
+long double strtold(const char* s, char** end) { return strtod(s, end); }
+
+char* getenv(const char* name) {
+    (void)name;
+    return NULL;
+}
+
+char* realpath(const char* path, char* resolved) {
+    size_t len = strlen(path);
+    if (!resolved) resolved = alloc(len + 1);
+    else if (len >= 4096) return NULL;
+    if (resolved) memcpy(resolved, path, len + 1);
+    return resolved;
+}
+
 static void swap_bytes(char* a, char* b, size_t size) {
     while (size--) {
         char t = *a;

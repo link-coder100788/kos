@@ -3,8 +3,8 @@
 
 // Formatted output. Conversions: %d %i %u %x %X %o %c %s %p %f %F %e %E
 // %g %G %%, with the flags - + space 0 #, a width and a precision (either
-// may be *), and the length modifiers hh h l ll z j t. Files are in
-// sys.h (fs_read, fs_write...).
+// may be *), and the length modifiers hh h l ll z j t. Then FILE streams
+// (fopen...), and sys.h has whole-file helpers (fs_read, fs_write...).
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -25,5 +25,54 @@ int asprintf(char** out, const char* format, ...) __attribute__((format(printf, 
 // Writes s and a newline.
 int puts(const char* s);
 int putchar(int c);
+
+// ---- FILE streams -------------------------------------------------------------
+// Over the file descriptors of fcntl.h / unistd.h, so an open file is a
+// copy in memory, written back by fclose(): see fcntl.h. stdout and stderr
+// both go to the console; stdin reads nothing.
+
+typedef struct FILE FILE;
+extern FILE* stdin;
+extern FILE* stdout;
+extern FILE* stderr;
+
+#define EOF (-1)
+#ifndef SEEK_SET
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
+#endif
+
+// mode: "r", "w" or "a", maybe with "+" (read and write) and "b" (ignored).
+FILE* fopen(const char* path, const char* mode);
+// A stream over an open file descriptor; fclose() closes that too.
+FILE* fdopen(int fd, const char* mode);
+// Writes the file back if it changed. 0, or EOF if that failed.
+int fclose(FILE* f);
+// Nothing waits in a buffer, so there's nothing to do.
+int fflush(FILE* f);
+
+size_t fread(void* buf, size_t size, size_t n, FILE* f);
+size_t fwrite(const void* buf, size_t size, size_t n, FILE* f);
+int fgetc(FILE* f);
+#define getc fgetc
+// Reads a line (keeping its newline) into buf, at most size - 1 bytes.
+char* fgets(char* buf, int size, FILE* f);
+int fputc(int c, FILE* f);
+#define putc fputc
+int fputs(const char* s, FILE* f);
+int fprintf(FILE* f, const char* format, ...) __attribute__((format(printf, 2, 3)));
+int vfprintf(FILE* f, const char* format, va_list args);
+
+int fseek(FILE* f, long offset, int whence);
+long ftell(FILE* f);
+void rewind(FILE* f);
+// Whether a read hit the end, or anything failed.
+int feof(FILE* f);
+int ferror(FILE* f);
+int fileno(FILE* f);
+
+// Deletes a file.
+int remove(const char* path);
 
 #endif //C_STDIO_H

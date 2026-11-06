@@ -1,6 +1,7 @@
 #include "time.h"
 #include "stdio.h"
 #include "sys.h"
+#include "sys/time.h"
 
 static const char* const DAYS[] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
 static const char* const MONTHS[] = { "January", "February", "March", "April", "May", "June", "July",
@@ -10,6 +11,21 @@ time_t time(time_t* t) {
     time_t now = unix_time();
     if (t) *t = now;
     return now;
+}
+
+int gettimeofday(struct timeval* tv, void* tz) {
+    (void)tz;
+    static long start_s = -1;
+    static uint64_t start_ms;
+    if (start_s < 0) {
+        start_s = unix_time();
+        if (start_s < 0) return -1;
+        start_ms = uptime_ms();
+    }
+    uint64_t ms = (uint64_t)start_s * 1000 + (uptime_ms() - start_ms);
+    tv->tv_sec = (time_t)(ms / 1000);
+    tv->tv_usec = (long)(ms % 1000) * 1000;
+    return 0;
 }
 
 // Days since 1970-01-01 for a date (Howard Hinnant's days_from_civil):

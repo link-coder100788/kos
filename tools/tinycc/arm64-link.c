@@ -11,7 +11,12 @@
 
 #define R_NUM      R_AARCH64_NUM
 
+#ifdef CONFIG_TCC_KOS
+/* KOS patch: KOS loads programs at USER_BASE. */
+#define ELF_START_ADDR 0x50000000
+#else
 #define ELF_START_ADDR 0x00400000
+#endif
 #define ELF_PAGE_SIZE 0x10000
 
 #define PCRELATIVE_DLLPLT 1

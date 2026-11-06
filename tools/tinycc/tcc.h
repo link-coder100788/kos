@@ -201,6 +201,13 @@ extern long double strtold (const char *__nptr, char **__endptr);
 # endif
 #endif
 
+/* KOS patch: tcc for KOS (CONFIG_TCC_KOS, set by KOS's Makefile) is built
+   by tcc for arm64 Linux, so it looks native, but KOS can't map memory
+   executable for -run. */
+#ifdef CONFIG_TCC_KOS
+# undef TCC_IS_NATIVE
+#endif
+
 #if defined CONFIG_TCC_BACKTRACE && CONFIG_TCC_BACKTRACE==0
 # undef CONFIG_TCC_BACKTRACE
 #else

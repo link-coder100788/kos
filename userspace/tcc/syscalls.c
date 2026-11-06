@@ -87,5 +87,5 @@ void _start(void) {
     check("strtod", strtod("1e500", NULL) == INFINITY && isnan(strtod("nan", NULL)) && strtod("2.5", NULL) == 2.5);
 
     printf("%d failed\n", failed);
-    exit();
+    exit(0);
 }

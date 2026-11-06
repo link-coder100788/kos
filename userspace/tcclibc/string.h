@@ -40,6 +40,11 @@ size_t strspn(const char* s, const char* accept);
 size_t strcspn(const char* s, const char* reject);
 char* strpbrk(const char* s, const char* accept);
 
+// What an errno value (errno.h) means, in words.
+char* strerror(int e);
+// memset(dst, 0, n).
+void bzero(void* dst, size_t n);
+
 // A copy in fresh memory (free() it), or NULL.
 char* strdup(const char* s);
 char* strndup(const char* s, size_t n);

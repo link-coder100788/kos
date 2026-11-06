@@ -10,5 +10,5 @@ void _start(void) {
     snprintf(s, 32, "malloc'd %d bytes", 32);
     writeln(s);
     free(s);
-    exit();
+    exit(0);
 }
