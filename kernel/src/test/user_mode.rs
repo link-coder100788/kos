@@ -3,8 +3,10 @@
 //! checks how it ends. Programs that fault are counted in
 //! `stats::PROGRAMS_KILLED`; ones ended with `kill` aren't.
 
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
+use crate::filesys::fs_ipc::{fs_call, FsRequest, FsResponse};
 use crate::loader;
 use crate::process::{self, Console, USER_BASE};
 use crate::scheduler::{self, wait::sleep_ms, TaskId};
@@ -330,6 +332,71 @@ fn test_kernel_tasks_cant_be_killed() {
     assert!(running(shell));
 }
 
+// ---- tcc --------------------------------------------------------------------
+
+fn write_file(path: &str, data: &str) {
+    let written = fs_call(FsRequest::Write { cwd: "/".into(), path: path.into(), data: data.as_bytes().to_vec() });
+    assert!(matches!(written, FsResponse::Ok), "writing {}", path);
+}
+
+fn read_file(path: &str) -> Option<Vec<u8>> {
+    match fs_call(FsRequest::Read { cwd: "/".into(), path: path.into() }) {
+        FsResponse::Data(data) => Some(data),
+        _ => None,
+    }
+}
+
+fn remove_file(path: &str) {
+    fs_call(FsRequest::Remove { cwd: "/".into(), path: path.into() });
+}
+
+/// Runs program `path` with `args`, detached, and waits up to `ms` for it.
+fn run_program(path: &str, args: &str, ms: u64) {
+    let id = loader::spawn(path, args, Console::Detached).unwrap_or_else(|e| panic!("can't run {}: {}", path, e));
+    assert!(ended_within(id, ms), "{} didn't end", path);
+}
+
+/// /bin/tcc (from `make disk`) compiles a C program on KOS, and what it
+/// makes runs. A detached program's output goes nowhere, so the program
+/// writes its answer to a file. A program that doesn't compile gives no
+/// output file (KOS has no exit statuses to say so).
+fn test_tcc_compiles_and_runs_a_program() {
+    const TCC: &str = "/bin/tcc.elf.b64";
+    const SOURCE: &str = "/tcc-test.c";
+    const PROGRAM: &str = "/tcc-test.elf";
+    const RESULT: &str = "/tcc-test.txt";
+    assert!(read_file(TCC).is_some(), "no {} on the disk: run `make disk`", TCC);
+    for path in [SOURCE, PROGRAM, RESULT] {
+        remove_file(path);
+    }
+    write_file(SOURCE, r#"
+#include <stdio.h>
+#include <string.h>
+
+static int square(int x) { return x * x; }
+
+int main(int argc, char** argv) {
+    FILE* f = fopen("/tcc-test.txt", "w");
+    fprintf(f, "%d %s %d", square(argc + 5), argv[1], (int)strlen(argv[2]));
+    fclose(f);
+    return 0;
+}
+"#);
+    run_program(TCC, &alloc::format!("-o {} {}", PROGRAM, SOURCE), 30_000);
+    assert!(read_file(PROGRAM).is_some(), "tcc made no program");
+    run_program(PROGRAM, "hello abc", 5_000);
+    let result = read_file(RESULT).map(|d| String::from_utf8_lossy(&d).into_owned());
+    assert_eq!(result.as_deref(), Some("64 hello 3"));
+
+    write_file(SOURCE, "int main(void) { return nothing_called_this; }\n");
+    remove_file(PROGRAM);
+    run_program(TCC, &alloc::format!("-o {} {}", PROGRAM, SOURCE), 30_000);
+    assert!(read_file(PROGRAM).is_none(), "tcc made a program from code with an error");
+    for path in [SOURCE, PROGRAM, RESULT] {
+        remove_file(path);
+    }
+}
+
 pub fn run() {
     // The loader task reaps finished programs; let boot settle first.
     sleep_ms(200);
@@ -357,5 +424,6 @@ pub fn run() {
         &test_programs_run_in_parallel,
         &test_wakeups_reach_program_cores_quickly,
         &test_kernel_tasks_cant_be_killed,
+        &test_tcc_compiles_and_runs_a_program,
     ]);
 }

@@ -16,9 +16,11 @@
 #                   (build/tcc-libs/libkos.a and libtcc1.a)
 #   make tcc-progs  build userspace/tcc/*.c with tcc into build/tcc-libs/prog/
 #   make tcc-kos    build tcc itself for KOS: build/tcc-libs/bin/tcc.elf
+#   make tcc-disk   lay out tcc's files for the disk (/bin/tcc, /include,
+#                   /lib/tcc) in build/tcc-libs/disk; `make disk` does this
 #   make disk       (re)build disk.img from disk/ + the userspace programs
-#                   (into /programs), the system commands (into /bin) and
-#                   the games (into /games), discarding anything written to
+#                   (into /programs), the system commands (into /bin), the
+#                   games (into /games) and tcc, discarding anything written to
 #                   it from inside KOS
 #   make kai-setup  create K-AI's Python venv with PyTorch (once)
 #   make kai-train  regenerate K-AI's data, train and export the model, and
@@ -92,7 +94,7 @@ QEMU = qemu-system-aarch64 \
 	-rtc base=utc -fw_cfg name=opt/kos/utc_offset,string=$(UTC_OFFSET) \
 	$(if $(LOG),-fw_cfg name=opt/kos/log$(comma)string=$(subst $(comma),$(comma)$(comma),$(LOG)))
 
-.PHONY: all kernel kos run run-gui debug lldb test doc package user games tcc-libs tcc-progs tcc-kos disk kai kai-setup kai-train kai-upload digit-setup digit-train digit-upload clean FORCE
+.PHONY: all kernel kos run run-gui debug lldb test doc package user games tcc-libs tcc-progs tcc-kos tcc-disk disk kai kai-setup kai-train kai-upload digit-setup digit-train digit-upload clean FORCE
 
 all: kos
 
@@ -307,6 +309,20 @@ $(TCC_KOS): $(wildcard $(TCC_DIR)/*.c $(TCC_DIR)/*.h) $(TCC_LIBC_H) $(TCC_LIBS) 
 	$(TCC_X) $(TCC_CFLAGS) -I $(TCC_DIR) $(TCC_KOS_DEFS) -o $@ \
 		$(TCC_OUT)/crt1.o $(TCC_DIR)/tcc.c $(TCC_LIBS)
 
+# What goes on the disk for tcc, laid out as it is there: /bin/tcc
+# (base64, like every /bin command), tcclibc's headers in /include, and
+# tcc's own headers, libraries and start files in /lib/tcc. Made afresh each
+# time, so a deleted header doesn't linger.
+TCC_DISK := $(TCC_OUT)/disk
+
+tcc-disk: $(TCC_KOS) $(TCC_LIBS) $(TCC_CRT)
+	rm -rf $(TCC_DISK)
+	mkdir -p $(TCC_DISK)/bin $(TCC_DISK)/lib/tcc/include
+	base64 < $(TCC_KOS) | tr -d '\n' > $(TCC_DISK)/bin/tcc.elf.b64
+	rsync -a --prune-empty-dirs --include='*/' --include='*.h' --exclude='*' userspace/tcclibc/ $(TCC_DISK)/include/
+	cp $(TCC_DIR)/include/*.h $(TCC_DISK)/lib/tcc/include/
+	cp $(TCC_LIBS) $(TCC_CRT) $(TCC_DISK)/lib/tcc/
+
 FORCE:
 
 # ---- disk ---------------------------------------------------------------
@@ -318,10 +334,10 @@ DISK_MIB := 32
 $(DISK):
 	$(MAKE) disk
 
-disk: user games
+disk: user games tcc-disk
 	@# Leave out programs whose sources were deleted.
 	rm -f $(filter-out $(USER_B64) $(CMD_B64) $(GAME_ELFS),$(wildcard $(USER_OUT)/disk/programs/* $(CMD_OUT)/disk/bin/* $(GAME_OUT)/disk/games/*))
-	cargo run -q --release -p kos-mkdisk -- $(DISK) $(DISK_MIB) disk $(USER_OUT)/disk $(CMD_OUT)/disk $(GAME_OUT)/disk
+	cargo run -q --release -p kos-mkdisk -- $(DISK) $(DISK_MIB) disk $(USER_OUT)/disk $(CMD_OUT)/disk $(GAME_OUT)/disk $(TCC_DISK)
 
 # ---- K-AI ---------------------------------------------------------------
 # Training runs on this computer (see tools/assistant/README.md); the model
