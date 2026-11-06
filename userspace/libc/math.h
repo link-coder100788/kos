@@ -51,14 +51,8 @@ double fabs(double x);
 double fmin(double a, double b);
 double fmax(double a, double b);
 
-#ifdef __TINYC__
-// tcc has neither builtin: a too-big constant is infinity, 0/0 is NaN.
-#define INFINITY (1e500)
-#define NAN (0.0/0.0)
-#else
 #define INFINITY (__builtin_inf())
 #define NAN (__builtin_nan(""))
-#endif
 static inline int isnan(double x) { return x != x; }
 static inline int isinf(double x) { return x == INFINITY || x == -INFINITY; }
 

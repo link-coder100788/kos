@@ -1,12 +1,7 @@
 #ifndef C_STDINT_H
 #define C_STDINT_H
 
-// Fixed-size integer types. clang brings its own stdint.h, which this
-// passes on to; tcc doesn't, so for tcc they're defined here.
-
-#ifndef __TINYC__
-#include_next <stdint.h>
-#else
+// Fixed-size integer types (tcc doesn't bring a stdint.h).
 
 typedef signed char int8_t;
 typedef short int16_t;
@@ -56,5 +51,4 @@ typedef unsigned long uintmax_t;
 #define INTMAX_C(c) c##L
 #define UINTMAX_C(c) c##UL
 
-#endif
 #endif //C_STDINT_H

@@ -1,7 +1,7 @@
 // The first program built by tcc: it links with the clang-built C library.
-#include "../libc/sys.h"
-#include "../libc/stdio.h"
-#include "../libc/stdlib.h"
+#include "../tcclibc/sys.h"
+#include "../tcclibc/stdio.h"
+#include "../tcclibc/stdlib.h"
 
 void _start(void) {
     writeln("Hello from tcc!");

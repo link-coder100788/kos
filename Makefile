@@ -227,20 +227,22 @@ $(GAME_OUT)/disk/games/%.elf: $(GAME_OUT)/debug/%.elf | $(GAME_OUT)/disk/games
 
 # ---- tcc ----------------------------------------------------------------
 # TinyCC (vendored in tools/tinycc) compiles programs on KOS itself. They
-# link with the C library built here by clang (asm and all) into libkos.a,
-# and with libtcc1.a, tcc's own helpers (128-bit long double, atomics...).
-# The library is built so tcc's linker can read it: not position-independent
-# (only the plain relocations tcc knows), and without unwind tables, debug
-# info or clang's .llvm_addrsig section. Both archives are made by tcc's
+# link with userspace/tcclibc, a copy of the C library that tcc can build:
+# its syscall wrappers all call kos_syscall (syscall.S) instead of using
+# inline asm, which tcc can't compile, so tcc builds it into libkos.a and
+# nothing it links was made by clang. libtcc1.a is tcc's own helpers
+# (128-bit long double, atomics...). Both archives are made by tcc's
 # archiver, `tcc -ar`, whose format tcc reads (macOS's ar writes another).
 
 TCC_DIR   := tools/tinycc
 # The cross compiler: runs on this computer, makes arm64 ELF code.
 TCC_X     := $(TCC_DIR)/arm64-tcc
 TCC_OUT   := $(BUILD)/tcc-libs
-TCC_LIBC_CFLAGS := -target aarch64-none-elf -ffreestanding -Wall -I userspace/libc \
-	-fno-PIE -fno-pic -fno-asynchronous-unwind-tables -fno-unwind-tables -fno-addrsig -g0
-TCC_LIBC_OBJS := $(patsubst userspace/libc/%.c,$(TCC_OUT)/obj/%.o,$(LIBC_SRC))
+# KOS's headers, then tcc's (stdarg.h, stddef.h...), none of this computer's.
+TCC_INC   := -nostdinc -I userspace/tcclibc -I $(TCC_DIR)/include
+TCC_LIBC_SRC := $(wildcard userspace/tcclibc/*.c userspace/tcclibc/*/*.c userspace/tcclibc/*.S)
+TCC_LIBC_H   := $(wildcard userspace/tcclibc/*.h userspace/tcclibc/*/*.h)
+TCC_LIBC_OBJS := $(patsubst userspace/tcclibc/%,$(TCC_OUT)/obj/%.o,$(basename $(TCC_LIBC_SRC)))
 
 tcc-libs: $(TCC_OUT)/libkos.a $(TCC_OUT)/libtcc1.a
 
@@ -250,9 +252,13 @@ $(TCC_X): FORCE
 	$(MAKE) -C $(TCC_DIR) cross-arm64
 $(TCC_DIR)/arm64-libtcc1.a: $(TCC_X) ;
 
-$(TCC_OUT)/obj/%.o: userspace/libc/%.c $(LIBC_H)
+$(TCC_OUT)/obj/%.o: userspace/tcclibc/%.c $(TCC_LIBC_H) $(TCC_X)
 	@mkdir -p $(@D)
-	clang $(TCC_LIBC_CFLAGS) -c $< -o $@
+	$(TCC_X) $(TCC_INC) -Wall -c $< -o $@
+
+$(TCC_OUT)/obj/%.o: userspace/tcclibc/%.S $(TCC_X)
+	@mkdir -p $(@D)
+	$(TCC_X) -c $< -o $@
 
 $(TCC_OUT)/libkos.a: $(TCC_LIBC_OBJS) $(TCC_X)
 	rm -f $@
@@ -263,16 +269,15 @@ $(TCC_OUT)/libtcc1.a: $(TCC_DIR)/arm64-libtcc1.a
 	cp $< $@
 
 # Every .c file in userspace/tcc is a program built by the cross compiler,
-# the way /bin/tcc will build them on KOS: KOS's headers then tcc's (none of
-# this computer's), no start files, and linked to run at USER_BASE
-# (0x5000_0000) rather than position-independent. Run one with `run <name>.elf`.
-TCC_CFLAGS := -nostdinc -nostdlib -static -I userspace/libc -I $(TCC_DIR)/include \
-	-Wl,-Ttext=0x50000000
+# the way /bin/tcc will build them on KOS: no start files, and linked to run
+# at USER_BASE (0x5000_0000) rather than position-independent. Run one with
+# `run <name>.elf`.
+TCC_CFLAGS := $(TCC_INC) -nostdlib -static -Wl,-Ttext=0x50000000
 TCC_PROGS  := $(patsubst userspace/tcc/%.c,$(TCC_OUT)/prog/%.elf,$(wildcard userspace/tcc/*.c))
 
 tcc-progs: $(TCC_PROGS)
 
-$(TCC_OUT)/prog/%.elf: userspace/tcc/%.c $(LIBC_H) $(TCC_OUT)/libkos.a $(TCC_OUT)/libtcc1.a
+$(TCC_OUT)/prog/%.elf: userspace/tcc/%.c $(TCC_LIBC_H) $(TCC_OUT)/libkos.a $(TCC_OUT)/libtcc1.a
 	@mkdir -p $(@D)
 	$(TCC_X) $(TCC_CFLAGS) -o $@ $< $(TCC_OUT)/libkos.a $(TCC_OUT)/libtcc1.a
 
