@@ -1,1 +1,2 @@
 *.k linguist-vendored
+tools/tinycc/** linguist-vendored
