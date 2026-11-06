@@ -17,7 +17,7 @@
 #   make tcc-progs  build userspace/tcc/*.c with tcc into build/tcc-libs/prog/
 #   make tcc-kos    build tcc itself for KOS: build/tcc-libs/bin/tcc.elf
 #   make tcc-disk   lay out tcc's files for the disk (/bin/tcc, /include,
-#                   /lib/tcc) in build/tcc-libs/disk; `make disk` does this
+#                   /.kos/lib/tcc) in build/tcc-libs/disk; `make disk` does this
 #   make disk       (re)build disk.img from disk/ + the userspace programs
 #                   (into /programs), the system commands (into /bin), the
 #                   games (into /games) and tcc, discarding anything written to
@@ -295,10 +295,10 @@ $(TCC_OUT)/prog/%.elf: userspace/tcc/%.c $(TCC_LIBC_H) $(TCC_LIBS)
 # tcc itself, for KOS: built by the cross compiler against tcclibc, with
 # CONFIG_TCC_KOS for the "KOS patch" changes in tools/tinycc (no -run,
 # programs linked at USER_BASE and always static). On KOS it finds its own
-# headers and libraries in /lib/tcc ({B}) and tcclibc's headers in /include.
+# headers and libraries in /.kos/lib/tcc ({B}) and tcclibc's headers in /include.
 TCC_KOS_DEFS := -DONE_SOURCE=1 -DTCC_TARGET_ARM64=1 -DCONFIG_TCC_KOS -DCONFIG_TCC_STATIC \
 	-DCONFIG_TCC_BACKTRACE=0 -DCONFIG_TCC_BCHECK=0 -DCONFIG_TCC_SEMLOCK=0 \
-	-DCONFIG_TCCDIR='"/lib/tcc"' -DCONFIG_TCC_SYSINCLUDEPATHS='"/include:{B}/include"' \
+	-DCONFIG_TCCDIR='"/.kos/lib/tcc"' -DCONFIG_TCC_SYSINCLUDEPATHS='"/include:{B}/include"' \
 	-DCONFIG_TCC_LIBPATHS='"{B}"' -DCONFIG_TCC_CRTPREFIX='"{B}"' -DCONFIG_TCC_ELFINTERP='"-"'
 TCC_KOS    := $(TCC_OUT)/bin/tcc.elf
 
@@ -311,17 +311,18 @@ $(TCC_KOS): $(wildcard $(TCC_DIR)/*.c $(TCC_DIR)/*.h) $(TCC_LIBC_H) $(TCC_LIBS) 
 
 # What goes on the disk for tcc, laid out as it is there: /bin/tcc
 # (base64, like every /bin command), tcclibc's headers in /include, and
-# tcc's own headers, libraries and start files in /lib/tcc. Made afresh each
-# time, so a deleted header doesn't linger.
+# tcc's own headers, libraries and start files in /.kos/lib/tcc (/.kos is
+# where KOS keeps its system files). Made afresh each time, so a deleted
+# header doesn't linger.
 TCC_DISK := $(TCC_OUT)/disk
 
 tcc-disk: $(TCC_KOS) $(TCC_LIBS) $(TCC_CRT)
 	rm -rf $(TCC_DISK)
-	mkdir -p $(TCC_DISK)/bin $(TCC_DISK)/lib/tcc/include
+	mkdir -p $(TCC_DISK)/bin $(TCC_DISK)/.kos/lib/tcc/include
 	base64 < $(TCC_KOS) | tr -d '\n' > $(TCC_DISK)/bin/tcc.elf.b64
 	rsync -a --prune-empty-dirs --include='*/' --include='*.h' --exclude='*' userspace/tcclibc/ $(TCC_DISK)/include/
-	cp $(TCC_DIR)/include/*.h $(TCC_DISK)/lib/tcc/include/
-	cp $(TCC_LIBS) $(TCC_CRT) $(TCC_DISK)/lib/tcc/
+	cp $(TCC_DIR)/include/*.h $(TCC_DISK)/.kos/lib/tcc/include/
+	cp $(TCC_LIBS) $(TCC_CRT) $(TCC_DISK)/.kos/lib/tcc/
 
 FORCE:
 
