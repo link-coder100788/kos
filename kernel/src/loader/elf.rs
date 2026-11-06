@@ -16,13 +16,17 @@ pub enum LoadError {
     OutOfMemory(&'static str),
 }
 
-/// Loads a position-independent ELF into `mem` to run at `load_base`.
-/// Everything it puts in memory must land inside `region`. Returns the
-/// entry point and where the image ends.
-pub fn load_pie_elf(elf_bytes: &[u8], load_base: usize, region: Range<usize>, mem: &mut dyn ProgramMemory) -> Result<(usize, usize), LoadError> {
+/// Loads an ELF into `mem`. A position-independent one (clang's) runs at
+/// `load_base`; a fixed-address one (tcc's, linked at `USER_BASE`) runs
+/// where it was linked to. Everything it puts in memory must land inside
+/// `region`. Returns the entry point and where the image ends.
+pub fn load_elf(elf_bytes: &[u8], load_base: usize, region: Range<usize>, mem: &mut dyn ProgramMemory) -> Result<(usize, usize), LoadError> {
     let file = ElfBytes::<AnyEndian>::minimal_parse(elf_bytes).map_err(|_| LoadError::Parse)?;
-    let segments = file.segments().ok_or(LoadError::NoSegments)?;
+    let fixed = file.ehdr.e_type == elf::abi::ET_EXEC;
     let mut image_end = load_base;
+    // A fixed-address program's addresses are already the real ones.
+    let load_base = if fixed { 0 } else { load_base };
+    let segments = file.segments().ok_or(LoadError::NoSegments)?;
     for phdr in segments {
         if phdr.p_type != elf::abi::PT_LOAD {
             continue;
@@ -44,7 +48,9 @@ pub fn load_pie_elf(elf_bytes: &[u8], load_base: usize, region: Range<usize>, me
         mem.map(target_addr, phdr.p_memsz as usize).map_err(LoadError::OutOfMemory)?;
         mem.write(target_addr, data).map_err(LoadError::OutOfMemory)?;
     }
-    apply_relocations(&file, load_base, &region, mem)?;
+    if !fixed {
+        apply_relocations(&file, load_base, &region, mem)?;
+    }
     let entry = load_base
         .checked_add(file.ehdr.e_entry as usize)
         .ok_or(LoadError::OutOfRange)?;

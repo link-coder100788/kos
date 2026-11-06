@@ -1,6 +1,6 @@
 //! kbin_loader.rs — loads a KBIN image (produced by `kc`, the K compiler)
 //! into userspace memory and returns its entry point, mirroring
-//! `load_pie_elf`'s shape so it drops into the same runner/scheduler flow.
+//! `load_elf`'s shape so it drops into the same runner/scheduler flow.
 //!
 //! KBIN header (see kbin.rs in the K compiler):
 //!   Magic         4 bytes   "KBIN"

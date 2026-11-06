@@ -21,7 +21,7 @@ use crate::process::{self, Console, NewProcess, USER_BASE, HEAP_LIMIT};
 use crate::scheduler::TaskId;
 use crate::shell::fs::current_cwd;
 use crate::std::lock::irq_mutex::IrqMutex;
-use self::elf::load_pie_elf;
+use self::elf::load_elf;
 
 struct Job {
     path: String,
@@ -116,7 +116,7 @@ pub fn start_image(name: &str, args: &str, image: &[u8], kbin: bool, console: Co
     let loaded = if kbin {
         crate::k::load::load_kbin(image, USER_BASE..HEAP_LIMIT, &mut new).map_err(|e| format!("bad K program: {:?}", e))
     } else {
-        load_pie_elf(image, USER_BASE, USER_BASE..HEAP_LIMIT, &mut new).map_err(|e| format!("bad ELF: {:?}", e))
+        load_elf(image, USER_BASE, USER_BASE..HEAP_LIMIT, &mut new).map_err(|e| format!("bad ELF: {:?}", e))
     };
     // On failure, dropping `new` frees whatever was mapped.
     let (entry, image_end) = loaded?;

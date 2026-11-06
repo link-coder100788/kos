@@ -14,6 +14,7 @@
 #   make games      build every game in games/ into build/user/games/
 #   make tcc-libs   build the libraries programs compiled by tcc link with
 #                   (build/tcc-libs/libkos.a and libtcc1.a)
+#   make tcc-progs  build userspace/tcc/*.c with tcc into build/tcc-libs/prog/
 #   make disk       (re)build disk.img from disk/ + the userspace programs
 #                   (into /programs), the system commands (into /bin) and
 #                   the games (into /games), discarding anything written to
@@ -90,7 +91,7 @@ QEMU = qemu-system-aarch64 \
 	-rtc base=utc -fw_cfg name=opt/kos/utc_offset,string=$(UTC_OFFSET) \
 	$(if $(LOG),-fw_cfg name=opt/kos/log$(comma)string=$(subst $(comma),$(comma)$(comma),$(LOG)))
 
-.PHONY: all kernel kos run run-gui debug lldb test doc package user games tcc-libs disk kai kai-setup kai-train kai-upload digit-setup digit-train digit-upload clean FORCE
+.PHONY: all kernel kos run run-gui debug lldb test doc package user games tcc-libs tcc-progs disk kai kai-setup kai-train kai-upload digit-setup digit-train digit-upload clean FORCE
 
 all: kos
 
@@ -260,6 +261,20 @@ $(TCC_OUT)/libkos.a: $(TCC_LIBC_OBJS) $(TCC_X)
 $(TCC_OUT)/libtcc1.a: $(TCC_DIR)/arm64-libtcc1.a
 	@mkdir -p $(@D)
 	cp $< $@
+
+# Every .c file in userspace/tcc is a program built by the cross compiler,
+# the way /bin/tcc will build them on KOS: KOS's headers then tcc's (none of
+# this computer's), no start files, and linked to run at USER_BASE
+# (0x5000_0000) rather than position-independent. Run one with `run <name>.elf`.
+TCC_CFLAGS := -nostdinc -nostdlib -static -I userspace/libc -I $(TCC_DIR)/include \
+	-Wl,-Ttext=0x50000000
+TCC_PROGS  := $(patsubst userspace/tcc/%.c,$(TCC_OUT)/prog/%.elf,$(wildcard userspace/tcc/*.c))
+
+tcc-progs: $(TCC_PROGS)
+
+$(TCC_OUT)/prog/%.elf: userspace/tcc/%.c $(LIBC_H) $(TCC_OUT)/libkos.a $(TCC_OUT)/libtcc1.a
+	@mkdir -p $(@D)
+	$(TCC_X) $(TCC_CFLAGS) -o $@ $< $(TCC_OUT)/libkos.a $(TCC_OUT)/libtcc1.a
 
 FORCE:
 
