@@ -12,6 +12,8 @@
 #                   if every test passed (the log is in build/test.log)
 #   make user       build the userspace example programs into build/user/
 #   make games      build every game in games/ into build/user/games/
+#   make tcc-libs   build the libraries programs compiled by tcc link with
+#                   (build/tcc-libs/libkos.a and libtcc1.a)
 #   make disk       (re)build disk.img from disk/ + the userspace programs
 #                   (into /programs), the system commands (into /bin) and
 #                   the games (into /games), discarding anything written to
@@ -88,7 +90,7 @@ QEMU = qemu-system-aarch64 \
 	-rtc base=utc -fw_cfg name=opt/kos/utc_offset,string=$(UTC_OFFSET) \
 	$(if $(LOG),-fw_cfg name=opt/kos/log$(comma)string=$(subst $(comma),$(comma)$(comma),$(LOG)))
 
-.PHONY: all kernel kos run run-gui debug lldb test doc package user games disk kai kai-setup kai-train kai-upload digit-setup digit-train digit-upload clean FORCE
+.PHONY: all kernel kos run run-gui debug lldb test doc package user games tcc-libs disk kai kai-setup kai-train kai-upload digit-setup digit-train digit-upload clean FORCE
 
 all: kos
 
@@ -221,6 +223,45 @@ $(GAME_OUT)/debug/%.elf: $$(wildcard games/$$*/*.c games/$$*/*.s) $(LIBC_SRC) $(
 
 $(GAME_OUT)/disk/games/%.elf: $(GAME_OUT)/debug/%.elf | $(GAME_OUT)/disk/games
 	rust-objcopy --strip-debug $< $@
+
+# ---- tcc ----------------------------------------------------------------
+# TinyCC (vendored in tools/tinycc) compiles programs on KOS itself. They
+# link with the C library built here by clang (asm and all) into libkos.a,
+# and with libtcc1.a, tcc's own helpers (128-bit long double, atomics...).
+# The library is built so tcc's linker can read it: not position-independent
+# (only the plain relocations tcc knows), and without unwind tables, debug
+# info or clang's .llvm_addrsig section. Both archives are made by tcc's
+# archiver, `tcc -ar`, whose format tcc reads (macOS's ar writes another).
+
+TCC_DIR   := tools/tinycc
+# The cross compiler: runs on this computer, makes arm64 ELF code.
+TCC_X     := $(TCC_DIR)/arm64-tcc
+TCC_OUT   := $(BUILD)/tcc-libs
+TCC_LIBC_CFLAGS := -target aarch64-none-elf -ffreestanding -Wall -I userspace/libc \
+	-fno-PIE -fno-pic -fno-asynchronous-unwind-tables -fno-unwind-tables -fno-addrsig -g0
+TCC_LIBC_OBJS := $(patsubst userspace/libc/%.c,$(TCC_OUT)/obj/%.o,$(LIBC_SRC))
+
+tcc-libs: $(TCC_OUT)/libkos.a $(TCC_OUT)/libtcc1.a
+
+# tcc's own Makefile knows when the compiler or its libtcc1 is out of date;
+# `cross-arm64` brings both up to date.
+$(TCC_X): FORCE
+	$(MAKE) -C $(TCC_DIR) cross-arm64
+$(TCC_DIR)/arm64-libtcc1.a: $(TCC_X) ;
+
+$(TCC_OUT)/obj/%.o: userspace/libc/%.c $(LIBC_H)
+	@mkdir -p $(@D)
+	clang $(TCC_LIBC_CFLAGS) -c $< -o $@
+
+$(TCC_OUT)/libkos.a: $(TCC_LIBC_OBJS) $(TCC_X)
+	rm -f $@
+	$(TCC_X) -ar rcs $@ $(TCC_LIBC_OBJS)
+
+$(TCC_OUT)/libtcc1.a: $(TCC_DIR)/arm64-libtcc1.a
+	@mkdir -p $(@D)
+	cp $< $@
+
+FORCE:
 
 # ---- disk ---------------------------------------------------------------
 # disk.img is only created when missing, so `make run` never wipes what you
