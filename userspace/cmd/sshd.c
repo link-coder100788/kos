@@ -14,10 +14,11 @@
 // client: key exchange curve25519-sha256, host key ssh-ed25519, cipher
 // aes256-gcm@openssh.com.
 //
-// A session gets sshd's own shell (`help` lists its commands), since a
-// program can't pass another's output on: programs started with `run`
-// print on the KOS console instead. `ssh host command` runs one command.
-// One session at a time: anyone else connecting waits until it ends.
+// A session gets sshd's own shell (`help` lists its commands). Anything
+// else in /bin (grep, wc, curl...) runs as a program, with its output sent
+// to the client and what the client types as its input, until it ends;
+// Ctrl+C ends it. `ssh host command` runs one command. One session at a
+// time: anyone else connecting waits until it ends.
 
 #include "../libc/sys.h"
 #include "../libc/net.h"
@@ -139,7 +140,7 @@ static char client[32];
 __attribute__((noreturn)) static void fail(const char* why) {
     if (!in_session) {
         log_line("sshd: %s", why);
-        exit();
+        exit(0);
     }
     log_line("%s: %s", client, why);
     jump_to(session_over);
@@ -321,9 +322,8 @@ static struct {
     char client_version[256];
 } ssh;
 
-/// Reads more of what the network has into ssh.in. Fails once the client
-/// has gone (or, while logging in, takes too long).
-static void pump(void) {
+/// Makes room in ssh.in for more of what the network has.
+static void grow_in(void) {
     if (ssh.in_cap - ssh.in_len < 4096) {
         size_t cap = ssh.in_cap ? ssh.in_cap * 2 : 65536;
         uint8_t* in = alloc(cap);
@@ -335,6 +335,12 @@ static void pump(void) {
         ssh.in = in;
         ssh.in_cap = cap;
     }
+}
+
+/// Reads more of what the network has into ssh.in. Fails once the client
+/// has gone (or, while logging in, takes too long).
+static void pump(void) {
+    grow_in();
     for (;;) {
         long n;
         if (ssh.deadline) {
@@ -351,6 +357,24 @@ static void pump(void) {
         ssh.in_len += n;
         return;
     }
+}
+
+/// Takes whatever the network has right now into ssh.in, without waiting.
+static void pump_now(void) {
+    grow_in();
+    long n = tcp_try_recv(ssh.tcp, ssh.in + ssh.in_len, ssh.in_cap - ssh.in_len);
+    if (n == TCP_NOTHING_YET) return;
+    if (n <= 0) fail("disconnected");
+    ssh.in_len += n;
+}
+
+/// Whether ssh.in holds a whole packet (or a garbled one, which reading
+/// it will complain about).
+static bool packet_waiting(void) {
+    if (ssh.in_len < 4) return false;
+    uint32_t packet_len = (uint32_t)ssh.in[0] << 24 | (uint32_t)ssh.in[1] << 16 | (uint32_t)ssh.in[2] << 8 | ssh.in[3];
+    if (packet_len > MAX_PACKET) return true;
+    return ssh.in_len >= 4 + packet_len + (ssh.encrypted ? AES_GCM_TAG_LEN : 0);
 }
 
 /// Makes sure ssh.in holds `need` bytes.
@@ -1419,20 +1443,118 @@ static bool find_program(const char* name, char* path, size_t max) {
     return false;
 }
 
-static int c_run(int argc, char** argv) {
-    if (argc < 2) {
-        err("usage: run <program> [args...]");
+// Typed bytes not passed to the running program yet: with a terminal,
+// we echo and gather a line, as the shell does.
+static char typed[LINE_MAX];
+static size_t typed_len;
+
+/// Passes what the client has typed to a running program's input `*in`
+/// (program `id`): a line at a time with a terminal, as it comes without.
+/// Ctrl+C ends the program; Ctrl+D (or the client's EOF) ends its input.
+static void feed_input(long* in, long id) {
+    while (chan.input_len > 0) {
+        size_t used = 1;
+        uint8_t c = chan.input[0];
+        if (!chan.pty) {
+            used = chan.input_len;
+            if (*in >= 0) fd_write(*in, chan.input, used);
+        } else if (c == 0x03) {
+            channel_send("^C\r\n", 4, false);
+            proc_kill(id);
+        } else if (c == 0x04) {
+            if (*in >= 0) fd_close(*in);
+            *in = -1;
+        } else if (c == '\r' || c == '\n') {
+            // \r\n is one Enter.
+            if (c == '\r' && chan.input_len > 1 && chan.input[1] == '\n') used = 2;
+            channel_send("\r\n", 2, false);
+            typed[typed_len++] = '\n';
+            if (*in >= 0) fd_write(*in, typed, typed_len);
+            typed_len = 0;
+        } else if (c == 0x7f || c == '\b') {
+            if (typed_len > 0) {
+                typed_len--;
+                channel_send("\b \b", 3, false);
+            }
+        } else if (c >= 0x20 && typed_len < sizeof typed - 1) {
+            typed[typed_len++] = (char)c;
+            channel_send(&c, 1, false);
+        }
+        memmove(chan.input, chan.input + used, chan.input_len - used);
+        chan.input_len -= used;
+    }
+    if (chan.remote_eof && *in >= 0) {
+        fd_close(*in);
+        *in = -1;
+    }
+}
+
+/// Shows what's waiting in pipe `*fd` (stderr if `is_err`), closing it
+/// once it's over. Returns whether there was anything.
+static bool forward_output(long* fd, bool is_err) {
+    if (*fd < 0) return false;
+    char buf[4096];
+    long n = fd_read_now(*fd, buf, sizeof buf);
+    if (n == -2) return false;
+    if (n <= 0) {
+        fd_close(*fd);
+        *fd = -1;
+        return false;
+    }
+    if (is_err) channel_send(buf, n, true);
+    else out(buf, n);
+    return true;
+}
+
+/// Runs program `path` with `args` until it ends: what it prints goes to
+/// the client (stdout through out(), so `> file` catches it), and what the
+/// client types to it. Returns its exit status.
+static int run_here(const char* name, const char* path, const char* args) {
+    int in[2] = { -1, -1 }, outp[2] = { -1, -1 }, errp[2] = { -1, -1 };
+    if (fd_pipe(in) < 0 || fd_pipe(outp) < 0 || fd_pipe(errp) < 0) {
+        err("%s: %s", name, last_error());
+        for (int i = 0; i < 2; i++) {
+            if (in[i] >= 0) fd_close(in[i]);
+            if (outp[i] >= 0) fd_close(outp[i]);
+            if (errp[i] >= 0) fd_close(errp[i]);
+        }
         return 1;
     }
-    char path[512];
-    if (!find_program(argv[1], path, sizeof path)) {
-        err("run: %s: no such program", argv[1]);
-        return 1;
+    int fds[3] = { in[0], outp[1], errp[1] };
+    long id = spawn_io(path, args, fds);
+    // Only the program holds those ends now.
+    fd_close(in[0]);
+    fd_close(outp[1]);
+    fd_close(errp[1]);
+    long in_fd = in[1], out_fd = outp[0], err_fd = errp[0];
+    if (id < 0) {
+        err("%s: %s", name, last_error());
+        fd_close(in_fd);
+        fd_close(out_fd);
+        fd_close(err_fd);
+        return 126;
     }
-    // Relative paths in its arguments are made absolute, since it doesn't
-    // know our folder.
+    typed_len = 0;
+    while (out_fd >= 0 || err_fd >= 0 || proc_running(id)) {
+        bool busy = forward_output(&out_fd, false);
+        busy |= forward_output(&err_fd, true);
+        pump_now();
+        while (packet_waiting()) {
+            wait_packet();
+            busy = true;
+        }
+        feed_input(&in_fd, id);
+        if (!busy) sleep_ms(10);
+    }
+    if (in_fd >= 0) fd_close(in_fd);
+    return (int)proc_wait(id);
+}
+
+/// argv[1...] as one string of arguments for a program, with relative
+/// paths made absolute, since it doesn't know our folder. free() it.
+static char* program_args(int argc, char** argv) {
     buf_t args = {0};
-    for (int i = 2; i < argc; i++) {
+    for (int i = 1; i < argc; i++) {
         if (args.len) put_u8(&args, ' ');
         char abs[512];
         bool looks_like_path = argv[i][0] != '-' && argv[i][0] != '/' && (strchr(argv[i], '/') || strchr(argv[i], '.'));
@@ -1446,14 +1568,23 @@ static int c_run(int argc, char** argv) {
         put_bytes(&args, argv[i], strlen(argv[i]));
     }
     put_u8(&args, '\0');
-    long id = spawn(path, (const char*)args.data);
-    buf_free(&args);
-    if (id < 0) {
-        err("run: %s: %s", argv[1], last_error());
+    return (char*)args.data;
+}
+
+static int c_run(int argc, char** argv) {
+    if (argc < 2) {
+        err("usage: run <program> [args...]");
         return 1;
     }
-    outf("[%ld] %s started; it prints on the KOS console\n", id, argv[1]);
-    return 0;
+    char path[512];
+    if (!find_program(argv[1], path, sizeof path)) {
+        err("run: %s: no such program", argv[1]);
+        return 127;
+    }
+    char* args = program_args(argc - 1, argv + 1);
+    int result = run_here(argv[1], path, args);
+    free(args);
+    return result;
 }
 
 static int c_kill(int argc, char** argv) {
@@ -1503,7 +1634,7 @@ static const struct {
     {"ping", c_ping, "ping <host>             ping a computer"},
     {"pwd", c_pwd, "pwd                     the current folder"},
     {"rm", c_rm, "rm <path>...            delete files or empty folders"},
-    {"run", c_run, "run <program> [args]    start a program on the KOS console"},
+    {"run", c_run, "run <program> [args]    run a program (or just type its name)"},
     {"touch", c_touch, "touch <file>...         make empty files"},
     {"uname", c_uname, "uname [-a]              the system's name"},
     {"uptime", c_uptime, "uptime                  how long KOS has been running"},
@@ -1594,12 +1725,9 @@ static void run_command(const char* text) {
     command_fn fn = NULL;
     for (size_t i = 0; i < COMMAND_COUNT; i++)
         if (strcmp(argv[0], commands[i].name) == 0) fn = commands[i].fn;
-    if (!fn) {
-        char path[512];
-        if (find_program(argv[0], path, sizeof path))
-            err("%s: not one of sshd's commands. `run %s ...` starts it on the KOS console.", argv[0], argv[0]);
-        else
-            err("%s: command not found (try help)", argv[0]);
+    char path[512];
+    if (!fn && !find_program(argv[0], path, sizeof path)) {
+        err("%s: command not found (try help)", argv[0]);
         status = 127;
         return;
     }
@@ -1607,7 +1735,13 @@ static void run_command(const char* text) {
         capturing = true;
         captured.len = 0;
     }
-    status = fn(argc, argv);
+    if (fn) {
+        status = fn(argc, argv);
+    } else {
+        char* args = program_args(argc, argv);
+        status = run_here(argv[0], path, args);
+        free(args);
+    }
     if (target) {
         capturing = false;
         char path[512];
@@ -1905,14 +2039,14 @@ void _start(void) {
     int port = DEFAULT_PORT;
     if (argc == 1 && strcmp(argv[0], "-passwd") == 0) {
         set_password();
-        exit();
+        exit(0);
     }
     if (argc == 2 && strcmp(argv[0], "-p") == 0) {
         port = atoi(argv[1]);
     } else if (argc != 0) {
         writeln("Usage: sshd -passwd        set the login password (in the Terminal)");
         writeln("       bg sshd [-p port]   serve SSH on port (22 if not given)");
-        exit();
+        exit(0);
     }
     if (port < 1 || port > 65535) fail("bad port");
     long hash_len = fs_read(PASSWORD_FILE, password_hash, sizeof password_hash - 1);
