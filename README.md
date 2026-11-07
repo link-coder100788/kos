@@ -249,18 +249,18 @@ void _start(void) {
     printf("Hello from %s!\n", "KOS");
     char name[64];
     long n = readln(name, sizeof(name) - 1);
-    name[n] = '\0';
+    name[n < 0 ? 0 : n] = '\0';
     printf("Hi, %s\n", name);
-    exit();
+    exit(0);
 }
 ```
 
-Programs are freestanding: they start at `_start`, must call `exit()`, and use KOS's own C library in `userspace/libc` (on the include path, so `#include "stdio.h"` works). Each header documents its part:
+Programs are freestanding: they start at `_start`, must call `exit(status)` (0 for success; returning from `_start` is `exit(0)`), and use KOS's own C library in `userspace/libc` (on the include path, so `#include "stdio.h"` works). Each header documents its part:
 
 | Header | What's in it |
 |---|---|
-| `sys.h` | The kernel's side: console I/O, memory, files (read, write, append, list folders, delete, make folders), arguments, starting and waiting for other programs, the clock, random numbers, windows with labels and buttons, and `last_error()` for why a call failed |
-| `stdio.h` | `printf`, `snprintf`, `asprintf`, `puts`, with widths, precision and `%f %e %g` |
+| `sys.h` | The kernel's side: console I/O, memory, files (read, write, append, list folders, delete, make folders), file descriptors (`fd_open`, `fd_read`, `fd_write`, `fd_pipe`, `fd_dup2`...), arguments, starting other programs (with their stdin, stdout and stderr set: `spawn_io`) and waiting for their exit status, the clock, random numbers, windows with labels and buttons, and `last_error()` for why a call failed |
+| `stdio.h` | `printf`, `dprintf` (to a file descriptor), `snprintf`, `asprintf`, `puts`, with widths, precision and `%f %e %g` |
 | `string.h`, `ctype.h` | The usual string, memory and character functions |
 | `stdlib.h` | `malloc`/`calloc`/`realloc`, `strtol`/`strtod`/`atoi`, `qsort`/`bsearch`, `rand` |
 | `math.h` | `sin cos tan asin acos atan atan2 exp log log10 pow sqrt hypot floor ceil round fmod`..., written from scratch (`math.c` explains how) |
@@ -272,16 +272,22 @@ Programs are freestanding: they start at `_start`, must call `exit()`, and use K
 
 See `userspace/prog/ui_demo.c` for a program with a window.
 
+#### Exit statuses, file descriptors and pipes
+
+Every program ends with an exit status (0-255): what it passed to `exit`, or 130 if Ctrl+C ended it, 137 if it was killed and 139 if it crashed. `proc_wait(id)` returns it, once the program is gone and whatever it wrote to files is on the disk.
+
+A program has file descriptors, as on Unix (`kernel/src/fd.rs`): 0, 1 and 2 are its stdin, stdout and stderr, and `printf`, `write` and `readln` use them. Whoever starts a program picks them: the console for `run` and the Programs window, nothing for `bg`, and the parent's own for `spawn`. `spawn_io(path, args, fds)` gives it others, so a shell can feed one program's output to another through a pipe (`fd_pipe`), or send it to a file (`fd_open`). A pipe holds 64 KiB; reading an empty one waits, and gets the end of the input once every program that could write to it has ended. KOS's filesystem reads and writes whole files, so an open file is a copy in kernel memory, written back when its last descriptor is closed or its program ends.
+
 #### Syscalls
 
-Under the library, a program talks to the kernel with `svc #n`, where `n` picks the syscall. Arguments go in `x0`-`x4`, and syscalls with several jobs (4-7, 12, 13, 15, 16) take a sub-command in `x16`. The result comes back in `x0`: `-1` (`u64::MAX`) means it failed, and sub-command 5 of syscall 13 (`last_error()`) says why. Pointers are checked against the program's own memory, and a bad one fails instead of crashing anything. Strings passed with a length aren't NUL-terminated; the others are. The kernel side is `kernel/src/syscall.rs`.
+Under the library, a program talks to the kernel with `svc #n`, where `n` picks the syscall. Arguments go in `x0`-`x4`, and syscalls with several jobs (4-7, 12, 13, 15-17) take a sub-command in `x16`. The result comes back in `x0`: `-1` (`u64::MAX`) means it failed, and sub-command 5 of syscall 13 (`last_error()`) says why. Pointers are checked against the program's own memory, and a bad one fails instead of crashing anything. Strings passed with a length aren't NUL-terminated; the others are. The kernel side is `kernel/src/syscall.rs`.
 
 | `svc` | `x16` | Arguments → result | libc |
 |---|---|---|---|
-| 0 | | → never returns | `exit` |
-| 1 | | byte → | `write_byte` |
-| 2 | | data, len → | `write_bytes`, `write`, `printf` |
-| 3 | | buf, max → length (0 if not in the foreground) | `readln` |
+| 0 | | status → never returns | `exit` |
+| 1 | | byte → (to stdout) | `write_byte` |
+| 2 | | data, len → (to stdout) | `write_bytes`, `write`, `printf` |
+| 3 | | buf, max → length of a line from stdin; -1 at the end of the input (the console gives 0 if not in the foreground) | `readln` |
 | 4 memory | 0 | size → pointer, or 0 | `alloc`, `malloc` |
 | | 1 | size, n → pointer (size × n) | `alloc_n` |
 | | 2 | size → zeroed pointer | `alloc_z`, `calloc` |
@@ -329,12 +335,13 @@ Under the library, a program talks to the kernel with `svc #n`, where `n` picks 
 | | 13 | port → listener id | `tcp_listen` |
 | | 14 | id, from (`{IPv4 address, port}`, may be null), don't wait → connection id; -2 nothing yet | `tcp_accept`, `tcp_try_accept` |
 | | 15 | id → | `tcp_listen_close` |
-| 13 processes | 0 | path, args → task id | `spawn` |
-| | 1 | id → 0 once it has ended | `proc_wait`, `run_program` |
+| 13 processes | 0 | path, args → task id (it gets the caller's stdin, stdout and stderr) | `spawn` |
+| | 1 | id → its exit status, once it has ended | `proc_wait`, `run_program` |
 | | 2 | id → 0 | `proc_kill` |
 | | 3 | → this program's id | `proc_self` |
 | | 4 | id → 1 running, 0 not | `proc_running` |
 | | 5 | buf, max → length of why the last call failed | `last_error` |
+| | 6 | path, args, `int fds[3]` → task id; its stdin, stdout and stderr are the caller's `fds[0..3]` (-1: the same one) | `spawn_io` |
 | 14 | | buf → 0 (fills a `utsname_t`) | `uname` |
 | 15 crypto | 0 | data, len, out → 0 (32-byte SHA-256) | `sha256` |
 | | 1 | data, len, out → 0 (64-byte SHA-512) | `sha512` |
@@ -343,6 +350,15 @@ Under the library, a program talks to the kernel with `svc #n`, where `n` picks 
 | | 4 | `aead_t*` → 0, or -1 if the tag doesn't match (decrypts in place) | `aes_gcm_open` |
 | | 5 | password, len, out, max → the Argon2id PHC string's length (NUL-terminated in out) | `argon2id_hash` |
 | | 6 | password, len, PHC string → 1 if it matches, else 0 | `argon2id_verify` |
+| 17 file descriptors | 0 | path, len, flags (`FD_READ`, `FD_WRITE`, `FD_CREATE`, `FD_TRUNCATE`, `FD_APPEND`...: Linux's `O_*` values) → fd | `fd_open` |
+| | 1 | fd, buf, max, don't wait → bytes read; 0 at the end; -2 nothing yet | `fd_read`, `fd_read_now`, `fd_read_all` |
+| | 2 | fd, data, len, don't wait → bytes written; -2 no room yet | `fd_write`, `fd_write_now`, `dprintf` |
+| | 3 | fd → 0 (or -1 if writing the file back failed) | `fd_close` |
+| | 4 | fd, offset, whence → the new position | `fd_seek` |
+| | 5 | fd, to → to | `fd_dup2` |
+| | 6 | fd → a new fd for the same thing | `fd_dup` |
+| | 7 | `int fds[2]` → 0 (`fds[0]` reads what `fds[1]` writes) | `fd_pipe` |
+| | 8 | fd → 1 if it's the console, else 0 | `fd_isatty` |
 | 16 sound | 0 | hz → 0 (a steady tone until the next sound; 0 is silence) | `snd` |
 | | 1 | → 0, once the beep is over | `beep` |
 | | 2 | notes, len → 0 once the tune is over, or -1 for bad notes | `play` |
@@ -368,13 +384,13 @@ Each folder in `games/` is a game, built from all of its `.c` and `.s` files (li
 
 ### System commands
 
-A `.c` file in `userspace/cmd/` is a system command instead: `make disk` puts it in `/bin` (not the Programs window), and typing its name in the shell runs it, with whatever follows as its arguments. `args()` / `get_argv()` in `sys.h` read them. `userspace/cmd/grep.c` is the first one: `grep [-i] [-n] <text> <file>...`. `run` and `bg` pass arguments too: `run /programs/prog.elf.b64 a b`. Programs in `/programs` run by name too, but a command in `/bin` wins if both have the name.
+A `.c` file in `userspace/cmd/` is a system command instead: `make disk` puts it in `/bin` (not the Programs window), and typing its name in the shell runs it, with whatever follows as its arguments. `args()` / `get_argv()` in `sys.h` read them. `userspace/cmd/grep.c` is the first one: `grep [-i] [-n] <text> [file]...`, which reads stdin with no file, so it works in a pipe (as do `wc` and `sha256`), and exits with 0 if a line matched and 1 if none did. `run` and `bg` pass arguments too: `run /programs/prog.elf.b64 a b`. Programs in `/programs` run by name too, but a command in `/bin` wins if both have the name.
 
 `ssh [-p port] user@host [command]` logs in to another computer with a password (OpenSSH servers work out of the box: curve25519-sha256, ssh-ed25519 host keys, aes256-gcm@openssh.com), or runs one command there. The Terminal is line-based, so it is too: each line typed goes to the remote shell and the output comes back with escape codes stripped, so full-screen programs like vim don't work; `~.` on its own disconnects. Host keys are remembered in `/.kos/ssh/known_hosts`, and a changed one is refused. X25519 and Ed25519 are in the libc's `crypto.c`, alongside the kernel's hashes and ciphers.
 
-`sshd` (`userspace/cmd/sshd.c`) is the other end: an SSH server, so you can log in to KOS. `sshd -passwd` (in the Terminal, since it asks) sets the password, kept as an Argon2id hash in `/.kos/ssh/sshd_password`; `bg sshd [-p port]` serves on port 22 or the one given. There are no user accounts yet, so any user name works with the password, and three wrong ones disconnect you. The Ed25519 host key is made the first time, in `/.kos/ssh/sshd_host_key`, and its fingerprint goes in `/.kos/ssh/sshd.log`, where sshd notes connections and logins (a `bg` program's output is thrown away). A session gets sshd's own shell, with line editing and history on a terminal: `ls`, `cd`, `cat`, `echo`, `grep`, `wc`, `head`, `cp`, `mv`, `rm`, `mkdir`, `touch`, `get <url>`, `ping`, `date`, ... (`help` lists them), with `;` between commands and `>` / `>>` into files. Programs can't pass their output to another program yet, so other `/bin` programs start with `run <name>` and print on the KOS console, not over SSH. `ssh host command` runs one command and returns its exit status. One session at a time: anyone else connecting waits until it ends (a client gets 60 seconds to log in). Under QEMU, forward a port to it, e.g. `make run-gui FWD="tcp::2222-:22"` and `ssh -p 2222 me@localhost`.
+`sshd` (`userspace/cmd/sshd.c`) is the other end: an SSH server, so you can log in to KOS. `sshd -passwd` (in the Terminal, since it asks) sets the password, kept as an Argon2id hash in `/.kos/ssh/sshd_password`; `bg sshd [-p port]` serves on port 22 or the one given. There are no user accounts yet, so any user name works with the password, and three wrong ones disconnect you. The Ed25519 host key is made the first time, in `/.kos/ssh/sshd_host_key`, and its fingerprint goes in `/.kos/ssh/sshd.log`, where sshd notes connections and logins (a `bg` program's output is thrown away). A session gets sshd's own shell, with line editing and history on a terminal: `ls`, `cd`, `cat`, `echo`, `grep`, `wc`, `head`, `cp`, `mv`, `rm`, `mkdir`, `touch`, `get <url>`, `ping`, `date`, ... (`help` lists them), with `;` between commands and `>` / `>>` into files. Anything else in `/bin` runs as a program (or `run <name>`, for one with the same name as a shell command): its output comes back over SSH, what you type goes to its input, and Ctrl+C ends it. `ssh host command` runs one command and returns its exit status. One session at a time: anyone else connecting waits until it ends (a client gets 60 seconds to log in). Under QEMU, forward a port to it, e.g. `make run-gui FWD="tcp::2222-:22"` and `ssh -p 2222 me@localhost`.
 
-`ksh` (`userspace/cmd/ksh.c`) is a second shell, a C program in its own Shell window: type `ksh` in the Terminal. It has its own builtins (`ls`, `cd`, `cat`, `echo`, `alias`, `jobs`, ...), chains commands with `;`, `&&`, `||` and `&`, and has variables (`$X`, `$?`), quotes, `*` globs, history, Tab completion and scripts (`source file`; `/.kshrc` runs at the start). Programs it runs print in the Terminal, and it has no pipes or redirection yet. `help` in it lists everything.
+`ksh` (`userspace/cmd/ksh.c`) is a second shell, a C program in its own Shell window: type `ksh` in the Terminal. It has its own builtins (`ls`, `cd`, `cat`, `echo`, `alias`, `jobs`, ...), chains commands with `;`, `&&`, `||` and `&`, and has variables (`$X`, `$?`), quotes, `*` globs, history, Tab completion and scripts (`source file`; `/.kshrc` runs at the start). Programs it runs print in the Shell window and get the lines typed there as input (Ctrl+D ends it, Ctrl+C the program), and it has pipes and redirection: `ls /bin | grep sh`, `grep KOS notes.txt | wc`, `wc < notes.txt`, `uname -a > out.txt`, `>> log.txt`, `2> errors.txt`, `2>&1`. `$?` is the last command's exit status, and `&&` / `||` go by it. `help` in it lists everything.
 
 `audio <file>` (`userspace/cmd/audio.c`) is an audio analyzer in its own window, with three tabs (1, 2, 3 or Tab): the waveform (each channel's peaks, with the RMS inside), a spectrogram in magma colors (0 to -100 dB) and the frequency spectrum (Welch-averaged, with the loudest peak and its note). It reads WAV (8/16/24/32-bit PCM, float, mu-law, A-law, IMA ADPCM), AIFF / AIFF-C and Sun `.au`; compressed formats (MP3, FLAC, Ogg) aren't supported yet. The mouse wheel zooms, right-drag scrolls, left-drag selects a stretch (the spectrum then shows only it, and `z` zooms to it), `0` shows everything, `[` / `]` change the FFT size and `l` switches the frequency axis between linear and log. Hovering shows the time, value, frequency, note and dB under the pointer. Space plays the selection (or from the left of the view) with a moving playhead: it writes a 16-bit mono copy to `/.kos/audio/play.wav` for `play_file`, so it's limited to three minutes and 8-192 kHz.
 
@@ -425,6 +441,8 @@ kernel/
     mm/                page frames, address spaces (vm.rs), kernel heap, memory map (layout.rs)
     scheduler/         tasks, trap frame, wait queues, async executor
     syscall.rs         syscall handlers (svc #N)
+    process.rs         programs: address spaces, heaps, exit statuses, file descriptor tables
+    fd.rs              file descriptors: open files, pipes, the console
     loader/            ELF loading and the program runner task
     drivers/           UART, display (virtio-gpu or ramfb + fw_cfg), virtio (blk, gpu, input, net, snd), input events, panic screen
     net/               network task: DHCP, DNS, HTTP client, TLS, ping, TCP + UDP sockets (on smoltcp)
