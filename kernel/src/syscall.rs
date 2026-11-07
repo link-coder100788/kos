@@ -128,8 +128,8 @@ pub fn syscall_write_bytes(frame: &mut SyscallContext) {
 }
 
 /// Reads a line from stdin, without its newline: its length, or u64::MAX
-/// at the end of the input (only a pipe or file has one). A line longer
-/// than the buffer is cut short.
+/// at the end of the input (a pipe or file's, or Ctrl+D on the console).
+/// A line longer than the buffer is cut short.
 #[syscall(3)]
 pub fn syscall_read_line(frame: &mut SyscallContext) {
     let Some(buf) = user_bytes_mut(frame, frame[0], frame[1]) else { frame[0] = u64::MAX; return };
@@ -142,7 +142,12 @@ pub fn syscall_read_line(frame: &mut SyscallContext) {
             frame[0] = 0;
             return;
         }
+        crate::drivers::uart::take_end_of_input();
         let line = Uart {}.read_s_unless(scheduler::current_killed).unwrap_or_default();
+        if crate::drivers::uart::take_end_of_input() {
+            frame[0] = u64::MAX;
+            return;
+        }
         let len = line.len().min(buf.len());
         buf[..len].copy_from_slice(&line.as_bytes()[..len]);
         frame[0] = len as u64;
@@ -927,8 +932,9 @@ mod proc {
     pub const RUNNING: u64 = 4;    // (id) -> 1 if it's a program still running, else 0
     pub const LAST_ERROR: u64 = 5; // (buf, max) -> why the last call failed, as text
     pub const SPAWN_IO: u64 = 6;   // (path, args, int fds[3]) -> task id; its stdin, stdout and stderr are the caller's fds[0..3] (-1: the same one)
+    pub const TASKS: u64 = 7;      // (buf, max) -> length of a line per task: "id core state cpu% kind name", tab-separated, then "core N idle%" lines
 
-    const_unique!(SPAWN, WAIT, KILL, SELF_ID, RUNNING, LAST_ERROR, SPAWN_IO);
+    const_unique!(SPAWN, WAIT, KILL, SELF_ID, RUNNING, LAST_ERROR, SPAWN_IO, TASKS);
 }
 
 #[syscall(13)]
@@ -995,6 +1001,7 @@ pub fn syscall_process(frame: &mut SyscallContext) {
             let why = crate::process::last_error().unwrap_or_default();
             copy_out(frame, frame[0], frame[1], why.as_bytes())
         }
+        proc::TASKS => copy_out(frame, frame[0], frame[1], scheduler::tasks_text().as_bytes()),
         _ => { log::warn!("process syscall: unknown sub-command {}", syscall_num); u64::MAX }
     };
 }

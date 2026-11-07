@@ -120,6 +120,11 @@ int proc_running(long id);
 // This program's own id.
 long proc_self(void);
 
+// Every task (kernel and program) as text: a line each of "id core state
+// cpu% kind name", tab-separated, then "core N idle%" lines. Copies up to
+// max bytes into buf and returns the full length (`ps` prints it).
+long proc_tasks(char* buf, size_t max);
+
 // ---- time ------------------------------------------------------------------
 // See time.h for dates.
 

@@ -81,6 +81,18 @@ fn interrupts_program(byte: u8) -> bool {
     byte == INTERRUPT && crate::process::interrupt_foreground()
 }
 
+/// Ctrl+D.
+const END_OF_INPUT: u8 = 0x04;
+
+/// Set when Ctrl+D is typed on an empty line: the line read ends there,
+/// and a program reading the console gets the end of its input.
+static GOT_END_OF_INPUT: AtomicBool = AtomicBool::new(false);
+
+/// Whether the last line read ended with Ctrl+D (and forgets it).
+pub fn take_end_of_input() -> bool {
+    GOT_END_OF_INPUT.swap(false, Ordering::AcqRel)
+}
+
 /// Set after a '\r', so a following '\n' (terminals that send CR LF for
 /// Enter) doesn't count as a second, empty line.
 static LAST_WAS_CR: AtomicBool = AtomicBool::new(false);
@@ -110,6 +122,11 @@ impl Uart {
                 INTERRUPT => {
                     crate::print!("^C\n");
                     return Some(String::new());
+                }
+                END_OF_INPUT if s.is_empty() => {
+                    GOT_END_OF_INPUT.store(true, Ordering::Release);
+                    crate::print!("^D\n");
+                    return Some(s);
                 }
                 0x7f | 0x08 => {
                     if s.pop().is_some() {

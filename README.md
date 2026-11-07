@@ -78,16 +78,20 @@ The mouse and keyboard are virtio-input devices. The mouse is an absolute tablet
 
 ### The shell
 
-The shell runs on the serial console and in the Terminal window at the same time; type in either. Ctrl+C ends the program started with `run`, or at the prompt throws away the line you're typing.
+The shell runs on the serial console and in the Terminal window at the same time; type in either. Ctrl+C ends the program started with `run`, or at the prompt throws away the line you're typing; Ctrl+D on an empty line ends a program's typed input.
+
+Programs from `/bin` (by name, by path or after `run`) can be joined and sent to files: `ls /bin | grep sh`, `grep KOS notes.txt | wc > count.txt`, `cat < notes.txt`, `>>` to add to a file, `2> file` for errors and `2>&1` to send them with the output. The shell's own commands below can't be in a pipeline, and a line starting with one of them is left alone, so `play O4 C > D` still plays.
 
 | Command | What it does |
 |---------|--------------|
 | `help` | List commands |
-| `ls`, `cd`, `cat`, `mkdir`, `rm` `<path>` | Files |
+| `cd <path>` | Change folder |
+| `ls [-a] [-l] [path]`, `cat [file]...`, `mkdir`, `rm` | Files: programs in `/bin`, so they work in pipelines (`cat` with no file reads its input) |
+| `encode [in [out]]`, `decode [in [out]]` | To and from base64 (as programs are kept on the disk, `.elf.b64`); stdin and stdout without files |
 | `write <path> <text>` | Create a file |
 | `run <path>.elf.b64` | Run a program; the shell waits until it ends, and it gets the console. Ctrl+C ends it. A bare name (`run grep ...`) is looked up in `/bin` and `/programs` |
 | `bg <path>.elf.b64` | Run a program in the background: no input, output thrown away. Names are looked up as for `run`: `bg sshd` |
-| `kill <id>` | End a program (ids are in `ps` and the Task Manager) |
+| `kill <id>...` | End programs (ids are in `ps` and the Task Manager) |
 | `open <file>` | Show a PNG, JPEG or BMP image in a window, play an MP4 video, or play a WAV sound |
 | `k build <file.k>`, `k run out.kbin` | Compile and run a K program |
 | `net` | Network address, gateway and DNS server |
@@ -97,7 +101,7 @@ The shell runs on the serial console and in the Terminal window at the same time
 | `browse [url]` | Open a Browser window |
 | `kai <request>` | Ask K-AI, e.g. `kai what's running?` (see below) |
 | `beep`, `snd <hz>`, `play <notes or file.wav>` | Sound: a beep, a steady tone (`snd 0` or `snd off` stops it), a tune or a WAV file (see [Sound](#sound)) |
-| `ps` | Tasks, the core each runs on, their share of its time, which are programs, and how idle each core is |
+| `ps` | Tasks, the core each runs on, their share of its time, which are programs, and how idle each core is (`ps \| grep sshd`) |
 | `heap_remain`, `heap_test` | Kernel heap usage / stress test |
 | `mmu [addr]` | Free page frames; how an address translates |
 | `dump` | Print the CPU registers |
@@ -266,7 +270,7 @@ Programs are freestanding: they start at `_start`, must call `exit(status)` (0 f
 | `math.h` | `sin cos tan asin acos atan atan2 exp log log10 pow sqrt hypot floor ceil round fmod`..., written from scratch (`math.c` explains how) |
 | `time.h` | `time`, `localtime`, `gmtime`, `mktime`, `strftime` |
 | `net.h` | HTTP and HTTPS requests (any method, headers and body), `ping`, TCP connections (out, and listening for them coming in) and UDP sockets |
-| `crypto.h` | SHA-256, SHA-512, HMAC-SHA256 and AES-256-GCM, done by the kernel; `crypto_equal` for comparing MACs |
+| `crypto.h` | SHA-256, SHA-512, HMAC-SHA256 and AES-256-GCM, done by the kernel; `crypto_equal` for comparing MACs; X25519, Ed25519 and base64 |
 | `canvas.h` | Windows you draw pixels into, for graphics and games |
 | `render3d.h` | A software 3D renderer for canvases: a camera, shapes, terrain, lighting and fog, with a depth buffer |
 
@@ -342,6 +346,7 @@ Under the library, a program talks to the kernel with `svc #n`, where `n` picks 
 | | 4 | id → 1 running, 0 not | `proc_running` |
 | | 5 | buf, max → length of why the last call failed | `last_error` |
 | | 6 | path, args, `int fds[3]` → task id; its stdin, stdout and stderr are the caller's `fds[0..3]` (-1: the same one) | `spawn_io` |
+| | 7 | buf, max → length of a line per task (id, core, state, CPU %, kind, name; tab-separated), then `core` lines with each core's idle % | `proc_tasks` |
 | 14 | | buf → 0 (fills a `utsname_t`) | `uname` |
 | 15 crypto | 0 | data, len, out → 0 (32-byte SHA-256) | `sha256` |
 | | 1 | data, len, out → 0 (64-byte SHA-512) | `sha512` |

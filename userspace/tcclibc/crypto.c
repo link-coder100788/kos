@@ -419,3 +419,45 @@ long ed25519_sign(uint8_t sig[64], const uint8_t seed[32], const void* msg, size
     memset(r, 0, sizeof r);
     return ok;
 }
+
+// ---- base64 -------------------------------------------------------------------
+
+static const char base64_digits[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+size_t base64_encode(char* out, const void* data, size_t len) {
+    const uint8_t* d = data;
+    size_t o = 0;
+    for (size_t i = 0; i < len; i += 3) {
+        uint32_t v = (uint32_t)d[i] << 16;
+        if (i + 1 < len) v |= (uint32_t)d[i + 1] << 8;
+        if (i + 2 < len) v |= d[i + 2];
+        out[o++] = base64_digits[v >> 18];
+        out[o++] = base64_digits[(v >> 12) & 63];
+        out[o++] = i + 1 < len ? base64_digits[(v >> 6) & 63] : '=';
+        out[o++] = i + 2 < len ? base64_digits[v & 63] : '=';
+    }
+    out[o] = '\0';
+    return o;
+}
+
+long base64_decode(uint8_t* out, const char* text, size_t len) {
+    uint32_t v = 0;
+    int bits = 0;
+    long o = 0;
+    for (size_t i = 0; i < len; i++) {
+        char c = text[i];
+        if (c == '=' || c == ' ' || c == '\n' || c == '\r' || c == '\t') continue;
+        int n = c >= 'A' && c <= 'Z' ? c - 'A'
+              : c >= 'a' && c <= 'z' ? c - 'a' + 26
+              : c >= '0' && c <= '9' ? c - '0' + 52
+              : c == '+' ? 62 : c == '/' ? 63 : -1;
+        if (n < 0) return -1;
+        v = v << 6 | (uint32_t)n;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out[o++] = (uint8_t)(v >> bits);
+        }
+    }
+    return o;
+}

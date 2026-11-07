@@ -785,21 +785,26 @@ pub fn remove_window(id: WindowId) {
     with_current(|p| p.windows.retain(|&(w, _)| w != id));
 }
 
-/// Ctrl+C: kills the program started with `run`, if one is going. Returns
-/// whether there was one. Safe from IRQ context (it doesn't allocate).
+/// Ctrl+C: kills the programs started with `run` (several, for a
+/// pipeline), if any are going. Returns whether there were any. Safe from
+/// IRQ context (it doesn't allocate).
 pub fn interrupt_foreground() -> bool {
-    let id = TABLE.lock().processes.iter()
-        .find(|p| p.console == Console::Foreground && !p.exited)
-        .map(|p| p.task);
-    match id {
-        Some(id) => {
-            INTERRUPTED.store(true, Ordering::Release);
-            set_status_of(id, STATUS_INTERRUPTED);
-            scheduler::kill(id);
-            true
+    let mut ids = [0 as TaskId; 16];
+    let mut count = 0;
+    for p in TABLE.lock().processes.iter_mut().filter(|p| p.console == Console::Foreground && !p.exited) {
+        if count < ids.len() {
+            p.status.get_or_insert(STATUS_INTERRUPTED);
+            ids[count] = p.task;
+            count += 1;
         }
-        None => false,
     }
+    if count > 0 {
+        INTERRUPTED.store(true, Ordering::Release);
+    }
+    for &id in &ids[..count] {
+        scheduler::kill(id);
+    }
+    count > 0
 }
 
 /// Whether the last foreground program was ended by Ctrl+C (and forgets it).

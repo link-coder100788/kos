@@ -309,6 +309,10 @@ long proc_self(void) {
     return (long)SVC(0xd, 3, 0, 0, 0, 0);
 }
 
+long proc_tasks(char* buf, size_t max) {
+    return (long)SVC(0xd, 7, buf, max, 0, 0);
+}
+
 // ---- file descriptors --------------------------------------------------------------
 
 long fd_open(const char* path, int flags) {

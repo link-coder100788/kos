@@ -67,6 +67,24 @@ pub fn run_foreground(path: String, args: String) {
     }
 }
 
+/// Runs a pipeline in the foreground: each (path, args, stdin/stdout/
+/// stderr) is started at once, and this returns once they've all ended,
+/// or Ctrl+C has ended them.
+pub fn run_pipeline(programs: Vec<(String, String, [Fd; 3])>) {
+    process::take_interrupted();
+    for (path, args, stdio) in programs {
+        // Dropping a program that didn't start closes its ends of the
+        // pipes, so its neighbours see the end of their input.
+        if let Err(e) = spawn(&path, &args, Console::Foreground, Some(stdio)) {
+            println!("can't run {}: {}", path, e);
+        }
+    }
+    process::EXITED.wait_until(|| !process::foreground_running());
+    if process::take_interrupted() {
+        println!("^C");
+    }
+}
+
 fn read_program(path: &str) -> Result<Vec<u8>, &'static str> {
     let bytes = match fs_call(FsRequest::Read { cwd: current_cwd(), path: String::from(path) }) {
         FsResponse::Data(bytes) => bytes,

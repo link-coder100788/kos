@@ -555,19 +555,25 @@ pub fn tasks() -> Vec<TaskInfo> {
     all
 }
 
-pub fn print_tasks() {
+/// Every task, for `ps` (the `tasks` syscall): a tab-separated line each,
+/// "id core state cpu kind name" (kind is "kernel", or "program" and how
+/// it's connected to the console), then "core" lines with each scheduler
+/// core and how idle it's been since boot, in percent.
+pub fn tasks_text() -> String {
+    use core::fmt::Write;
     let programs = crate::process::list();
-    println!("  ID  CORE  STATE      CPU  KIND          NAME");
+    let mut text = String::new();
     for t in tasks() {
         let kind = match programs.iter().find(|p| p.task == t.id) {
             Some(p) => alloc::format!("program {}", p.console.name()),
             None => String::from("kernel"),
         };
-        println!("{:>4}  {:>4}  {:<9} {:>3}%  {:<13} {}", t.id, t.core, t.state, t.cpu_percent, kind, t.name);
+        let _ = writeln!(text, "{}\t{}\t{}\t{}\t{}\t{}", t.id, t.core, t.state, t.cpu_percent, kind, t.name);
     }
     for core in scheduler_cores() {
-        println!("core {} idle {}% of the time since boot", core, idle_percent_of(core));
+        let _ = writeln!(text, "core\t{}\t{}", core, idle_percent_of(core));
     }
+    text
 }
 
 /// Whether a fault came from a program in user mode (which can be killed)

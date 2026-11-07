@@ -2,8 +2,8 @@
 //! 2 stderr, then whatever it opens) point at.
 //!
 //! - `Console`: writes print on the console; reads take a line typed there,
-//!   but only for the program started with `run` (anyone else reads the
-//!   end of input straight away).
+//!   but only for a program started with `run` (anyone else reads the end
+//!   of input straight away). Ctrl+D on an empty line is the end of input.
 //! - `Null`: writes are thrown away, reads are the end of input. A program
 //!   started with `bg` has it for 0-2.
 //! - `File`: an open file. The filesystem reads and writes whole files, so
@@ -161,7 +161,11 @@ impl Object {
                         return Ok(None);
                     }
                     // None: killed while waiting (Ctrl+C), which ends it.
+                    crate::drivers::uart::take_end_of_input();
                     let Some(line) = crate::drivers::uart::Uart {}.read_s_unless(scheduler::current_killed) else { return Ok(Some(0)) };
+                    if crate::drivers::uart::take_end_of_input() {
+                        return Ok(Some(0));
+                    }
                     let mut pending = CONSOLE_PENDING.lock();
                     pending.extend_from_slice(line.as_bytes());
                     pending.push(b'\n');

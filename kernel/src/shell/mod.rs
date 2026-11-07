@@ -1,7 +1,8 @@
 //! The console shell. `uart_read_task` reads console input (the serial
 //! port and the Terminal window) a line at a time and runs it as a
 //! command. While a program started with `run` is going, the shell waits
-//! for it, and the program reads the console itself (`readln`).
+//! for it, and the program reads the console itself (`readln`). Programs
+//! can be joined into pipelines and sent to files (see `fs`).
 
 pub mod fs;
 
@@ -33,7 +34,6 @@ enum UartCommand<'a> {
     Dns(&'a str),
     Fetch(&'a str),
     Browse(&'a str),
-    Tasks,
     Log(&'a str),
     Dmesg(&'a str),
     Stats,
@@ -41,7 +41,6 @@ enum UartCommand<'a> {
     Load(&'a str),
     Kai(&'a str),
     Time,
-    Kill(&'a str),
     Beep,
     Snd(&'a str),
     Play(&'a str),
@@ -63,9 +62,6 @@ impl<'a> UartCommand<'a> {
         }
         if s == "kai" || s.starts_with("kai ") {
             return Some(UartCommand::Kai(s[3..].trim()));
-        }
-        if s == "kill" || s.starts_with("kill ") {
-            return Some(UartCommand::Kill(s[4..].trim()));
         }
         if s == "snd" || s.starts_with("snd ") {
             return Some(UartCommand::Snd(s[3..].trim()));
@@ -109,7 +105,6 @@ impl<'a> UartCommand<'a> {
             "tcr" => Some(UartCommand::TestCoreRestart),
             "heap_test" => Some(UartCommand::HeapTest),
             "net" => Some(UartCommand::Net),
-            "ps" => Some(UartCommand::Tasks),
             "stats" => Some(UartCommand::Stats),
             "time" => Some(UartCommand::Time),
             "beep" => Some(UartCommand::Beep),
@@ -257,7 +252,6 @@ impl<'a> UartCommand<'a> {
                 Err(e) => println!("fetch: {}", e),
             },
             UartCommand::Kai(args) => crate::assistant::shell(args),
-            UartCommand::Tasks => crate::scheduler::print_tasks(),
             UartCommand::Stats => crate::stats::print(),
             UartCommand::Log(args) => {
                 let args: alloc::vec::Vec<&str> = args.split_whitespace().collect();
@@ -316,13 +310,6 @@ impl<'a> UartCommand<'a> {
                     }
                 }
             }
-            UartCommand::Kill(arg) => match arg.parse() {
-                Ok(id) => match crate::process::kill(id) {
-                    Ok(()) => println!("kill: ending task {}", id),
-                    Err(e) => println!("kill: {}", e),
-                },
-                Err(_) => println!("kill: usage: kill <task id> (see ps)"),
-            },
             UartCommand::Time => {
                 use crate::drivers::rtc;
                 println!("{}", rtc::local_now().unwrap_or(rtc::DateTime::new()))
@@ -348,6 +335,9 @@ pub extern "C" fn uart_read_task() -> ! {
         }
         if !s.is_empty() {
             log::debug!("command: {}", s);
+            if fs::run_pipeline(&s) {
+                continue;
+            }
             if let Some(command) = UartCommand::parse(&s) {
                 command.execute();
             }

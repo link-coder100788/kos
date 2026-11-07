@@ -162,6 +162,8 @@ fn test_if_enabled() {
         #[cfg(feature = "test")]
         crate::fd::tests::run();
         #[cfg(feature = "test")]
+        crate::shell::fs::tests::run();
+        #[cfg(feature = "test")]
         crate::process::tests::run();
         #[cfg(feature = "test")]
         crate::rand::tests::run();

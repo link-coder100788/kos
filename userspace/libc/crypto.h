@@ -75,4 +75,17 @@ long ed25519_sign(uint8_t sig[64], const uint8_t seed[32], const void* msg, size
 // Whether sig is public key pk's signature of msg.
 int ed25519_verify(const uint8_t pk[32], const void* msg, size_t len, const uint8_t sig[64]);
 
+// ---- base64 -------------------------------------------------------------------
+// Done here in the library rather than by the kernel.
+
+// The base64 (with padding) of len bytes of data, into out, NUL-terminated.
+// out needs BASE64_LEN(len) bytes. Returns the length written.
+#define BASE64_LEN(len) (4 * (((len) + 2) / 3) + 1)
+size_t base64_encode(char* out, const void* data, size_t len);
+
+// Decodes base64 text (len characters; padding, spaces and newlines are
+// skipped) into out, which needs len / 4 * 3 + 3 bytes. Returns how many
+// bytes it decoded, or -1 if the text isn't base64.
+long base64_decode(uint8_t* out, const char* text, size_t len);
+
 #endif //C_CRYPTO_H

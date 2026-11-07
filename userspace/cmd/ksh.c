@@ -876,7 +876,7 @@ static __attribute__((noreturn)) void quit(void) {
 // Commands only the kernel shell (the Terminal) has.
 static const char* kernel_commands[] = {
     "k", "kai", "net", "ping", "fetch", "browse", "open", "stats", "log", "dmesg",
-    "mmu", "load", "time", "tasks", "run", "bg", "decode", "encode", "hash",
+    "mmu", "load", "time", "run", "bg", "hash",
     "heap_remain", NULL,
 };
 
