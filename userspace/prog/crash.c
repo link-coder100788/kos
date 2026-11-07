@@ -6,5 +6,5 @@ void _start(void) {
     writeln("About to write to an unmapped address...");
     *(volatile int*)0x1000 = 42;
     writeln("This line should never print");
-    exit();
+    exit(0);
 }

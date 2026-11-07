@@ -160,6 +160,8 @@ fn test_if_enabled() {
         #[cfg(feature = "test")]
         k::test::full_test::run();
         #[cfg(feature = "test")]
+        crate::fd::tests::run();
+        #[cfg(feature = "test")]
         crate::process::tests::run();
         #[cfg(feature = "test")]
         crate::rand::tests::run();

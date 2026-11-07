@@ -171,13 +171,13 @@ void _start(void) {
     long len = readln(input, sizeof(input) - 1);
     if (len < 0 || len >= (long)sizeof(input)) {
         writeln("Input error.");
-        exit();
+        exit(1);
     }
     input[len] = '\0';
     double result;
     if (!evaluate(input, &result)) {
         writeln("Invalid expression.");
-        exit();
+        exit(1);
     }
     char output[64];
     int n = snprintf(output, sizeof(output), "%.10g", result);
@@ -186,5 +186,5 @@ void _start(void) {
     } else {
         writeln("Could not format result.");
     }
-    exit();
+    exit(0);
 }

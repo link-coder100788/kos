@@ -4,8 +4,8 @@
 //! built from page frames as it needs them:
 //!
 //! ```text
-//! EXIT_STUB                    one page holding `svc #0`, where `_start`
-//!                              returns to
+//! EXIT_STUB                    one page holding `mov x0, #0; svc #0`,
+//!                              where `_start` returns to
 //! USER_BASE ..                 the program image, then its heap, which
 //!           .. HEAP_LIMIT      grows as the program allocates
 //!           .. STACK_LIMIT     never mapped: a stack overflow faults
@@ -34,7 +34,17 @@
 //! into the table. When a program's task ends, however it ends (`exit`, a
 //! fault, or being killed), the scheduler calls `exited`. That only marks
 //! it, since it runs mid-switch with IRQs masked; the loader task then
-//! `reap`s it: closes its windows and frees its memory and page tables.
+//! `reap`s it: closes its windows and file descriptors and frees its memory
+//! and page tables.
+//!
+//! Every program ends with an exit status, 0-255: what it passed to `exit`
+//! (0 if `_start` returned), or 130 if Ctrl+C ended it, 137 if it was
+//! killed and 139 if it faulted, as Unix shells show them. `wait` returns
+//! it once the program has been reaped, so whatever it wrote to files is
+//! on the disk by then.
+//!
+//! Each program has its own file descriptors (see `fd`): 0-2 are its
+//! stdin, stdout and stderr, given to it by whoever started it.
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -46,6 +56,7 @@ use crate::mm::layout::{phys_to_virt, PAGE_SIZE};
 use crate::scheduler::{self, wait::WaitQueue, TaskId};
 use crate::std::lock::irq_mutex::IrqMutex;
 use crate::ui::window::WindowId;
+use crate::fd::{self, Fd};
 
 /// Where programs are loaded. K programs are linked to run here.
 pub const USER_BASE: usize = 0x5000_0000;
@@ -68,8 +79,16 @@ pub const HEAP_LIMIT: usize = 0x30_0000_0000;
 const HEAP_GROW: usize = 64 * 1024;
 /// ASIDs 1..=255 go to programs (0 is the kernel's).
 pub const MAX_PROGRAMS: usize = 255;
-/// `svc #0`.
-const SVC_EXIT: u32 = 0xd400_0001;
+/// `mov x0, #0`, then `svc #0`: returning from `_start` exits with 0.
+const EXIT_CODE: [u32; 2] = [0xd280_0000, 0xd400_0001];
+/// Exit statuses for programs that didn't call `exit`.
+pub const STATUS_INTERRUPTED: i32 = 130;
+pub const STATUS_KILLED: i32 = 137;
+pub const STATUS_FAULTED: i32 = 139;
+/// How many file descriptors a program can have open.
+pub const MAX_FDS: usize = 64;
+/// How many ended programs' exit statuses are kept for `wait`.
+const STATUSES_KEPT: usize = 256;
 
 pub type Pid = u64;
 
@@ -334,6 +353,10 @@ struct Process {
     http: Option<HttpReply>,
     /// Why its last network or process call failed.
     last_error: String,
+    /// Its exit status, once it's known.
+    status: Option<i32>,
+    /// Its file descriptors, by number.
+    fds: Vec<Option<Fd>>,
 }
 
 /// An HTTP response kept for a program to copy out piece by piece.
@@ -345,6 +368,8 @@ pub struct HttpReply {
 
 struct Table {
     processes: Vec<Process>,
+    /// Reaped programs' exit statuses, the newest last.
+    statuses: alloc::collections::VecDeque<(TaskId, i32)>,
     /// Which ASIDs are taken (bit n = ASID n; 0 is the kernel's).
     asids: [u64; 4],
     next_pid: Pid,
@@ -363,8 +388,8 @@ impl Table {
     }
 }
 
-static TABLE: IrqMutex<Table> = IrqMutex::new(Table { processes: Vec::new(), asids: [1, 0, 0, 0], next_pid: 1 });
-/// Woken when a program exits.
+static TABLE: IrqMutex<Table> = IrqMutex::new(Table { processes: Vec::new(), statuses: alloc::collections::VecDeque::new(), asids: [1, 0, 0, 0], next_pid: 1 });
+/// Woken when a program exits, and when it's been reaped.
 pub static EXITED: WaitQueue = WaitQueue::new();
 /// Some program has exited and not been reaped yet.
 static TO_REAP: AtomicBool = AtomicBool::new(false);
@@ -379,6 +404,8 @@ pub struct NewProcess {
     args: String,
     console: Console,
     memory: Memory,
+    /// Its stdin, stdout and stderr.
+    stdio: [Fd; 3],
 }
 
 impl NewProcess {
@@ -388,16 +415,30 @@ impl NewProcess {
         let mut memory = Memory::new();
         if !memory.map_range(STACK_TOP - STACK_INITIAL, STACK_INITIAL, MapFlags::USER_RW)
             || !memory.map_range(EXIT_STUB, PAGE_SIZE, MapFlags::USER_RWX)
-            || !memory.write(EXIT_STUB, &SVC_EXIT.to_le_bytes()) {
+            || !memory.write(EXIT_STUB, &exit_code_bytes()) {
             return None;
         }
-        Some(Self { name: String::from(name), args: String::new(), console, memory })
+        // A program in the background has nowhere to print or read from.
+        let stdio = if console == Console::Detached { [fd::null(), fd::null(), fd::null()] } else { [fd::console(), fd::console(), fd::console()] };
+        Some(Self { name: String::from(name), args: String::new(), console, memory, stdio })
+    }
+
+    /// Gives the program its stdin, stdout and stderr.
+    pub fn set_stdio(&mut self, stdio: [Fd; 3]) {
+        self.stdio = stdio;
     }
 
     /// Gives the program its command-line arguments (`args` syscall).
     pub fn set_args(&mut self, args: &str) {
         self.args = String::from(args);
     }
+}
+
+fn exit_code_bytes() -> [u8; 8] {
+    let mut bytes = [0; 8];
+    bytes[..4].copy_from_slice(&EXIT_CODE[0].to_le_bytes());
+    bytes[4..].copy_from_slice(&EXIT_CODE[1].to_le_bytes());
+    bytes
 }
 
 impl crate::loader::ProgramMemory for NewProcess {
@@ -418,7 +459,8 @@ impl crate::loader::ProgramMemory for NewProcess {
 /// its heap starts after that. Fails if 255 programs are already running.
 pub fn start(new: NewProcess, entry: usize, image_end: usize) -> Result<TaskId, &'static str> {
     let heap_start = (image_end + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-    let NewProcess { name, args, console, memory } = new;
+    let NewProcess { name, args, console, memory, stdio } = new;
+    let fds = stdio.into_iter().map(Some).collect();
     let mut memory = Some(memory);
     // It's added to the table before the lock is released, so even if it
     // runs at once on a program core and exits, `exited` finds it.
@@ -444,6 +486,8 @@ pub fn start(new: NewProcess, entry: usize, image_end: usize) -> Result<TaskId, 
             windows: Vec::new(),
             http: None,
             last_error: String::new(),
+            status: None,
+            fds,
         });
         Ok(task)
     })
@@ -480,11 +524,13 @@ pub fn needs_reaping() -> bool {
 pub fn reap() {
     TO_REAP.store(false, Ordering::Release);
     loop {
-        let process = {
+        let mut process = {
             let mut table = TABLE.lock();
             let Some(i) = table.processes.iter().position(|p| p.exited) else { return };
             table.processes.swap_remove(i)
         };
+        // Closing its files writes them back, which waits for the disk.
+        process.fds.clear();
         for &(id, kind) in &process.windows {
             match kind {
                 WindowKind::Widgets => crate::ui::window::close_window(id),
@@ -497,9 +543,18 @@ pub fn reap() {
             process.memory.pages.len() * PAGE_SIZE / 1024, process.windows.len());
         mmu::flush_asid(process.asid);
         let asid = process.asid;
+        let (task, status) = (process.task, process.status.unwrap_or(STATUS_KILLED));
         // Frees its pages and page tables, outside the lock.
         drop(process);
-        TABLE.lock().release_asid(asid);
+        {
+            let mut table = TABLE.lock();
+            table.release_asid(asid);
+            if table.statuses.len() == STATUSES_KEPT {
+                table.statuses.pop_front();
+            }
+            table.statuses.push_back((task, status));
+        }
+        EXITED.wake_all();
     }
 }
 
@@ -619,6 +674,81 @@ pub fn is_running(id: TaskId) -> bool {
     TABLE.lock().processes.iter().any(|p| p.task == id && !p.exited)
 }
 
+/// Program `id`'s exit status, once it has ended and been reaped: None
+/// while it's still around, Some(None) if there's no such program (or it
+/// ended too long ago to remember).
+pub fn exit_status(id: TaskId) -> Option<Option<i32>> {
+    let table = TABLE.lock();
+    if table.processes.iter().any(|p| p.task == id) {
+        return None;
+    }
+    Some(table.statuses.iter().rev().find(|(t, _)| *t == id).map(|&(_, s)| s))
+}
+
+/// Records the calling program's exit status (kept as 0-255), unless it
+/// already has one.
+pub fn set_exit_status(status: i32) {
+    with_current(|p| { p.status.get_or_insert(status & 0xff); });
+}
+
+fn set_status_of(id: TaskId, status: i32) {
+    if let Some(p) = TABLE.lock().processes.iter_mut().find(|p| p.task == id && !p.exited) {
+        p.status.get_or_insert(status);
+    }
+}
+
+// ---- file descriptors --------------------------------------------------------
+// These hand back any descriptor they replace or remove, for the caller to
+// drop once the table's lock is released: closing a file can wait for the
+// disk.
+
+/// The calling program's descriptor `fd`.
+pub fn fd_get(fd: u64) -> Option<Fd> {
+    with_current(|p| p.fds.get(fd as usize).cloned().flatten()).flatten()
+}
+
+/// Gives `object` the calling program's lowest free descriptor number.
+pub fn fd_add(object: Fd) -> Result<u64, Fd> {
+    let mut object = Some(object);
+    let added = with_current(|p| {
+        let n = match p.fds.iter().position(Option::is_none) {
+            Some(n) => n,
+            None if p.fds.len() < MAX_FDS => { p.fds.push(None); p.fds.len() - 1 }
+            None => return None,
+        };
+        p.fds[n] = object.take();
+        Some(n as u64)
+    }).flatten();
+    added.ok_or_else(|| object.take().unwrap())
+}
+
+/// Closes descriptor `fd`; None if it wasn't open.
+pub fn fd_take(fd: u64) -> Option<Fd> {
+    with_current(|p| p.fds.get_mut(fd as usize).and_then(Option::take)).flatten()
+}
+
+/// Makes descriptor `to` refer to `object`, giving back what it was.
+/// Err if `to` is out of range.
+pub fn fd_set(to: u64, object: Fd) -> Result<Option<Fd>, Fd> {
+    let to = to as usize;
+    if to >= MAX_FDS {
+        return Err(object);
+    }
+    let mut object = Some(object);
+    let old = with_current(|p| {
+        if p.fds.len() <= to {
+            p.fds.resize(to + 1, None);
+        }
+        core::mem::replace(&mut p.fds[to], object.take())
+    });
+    old.ok_or_else(|| object.take().unwrap())
+}
+
+/// Closes every descriptor of the calling program (it's exiting).
+pub fn fd_take_all() -> Vec<Fd> {
+    with_current(|p| core::mem::take(&mut p.fds).into_iter().flatten().collect()).unwrap_or_default()
+}
+
 /// Keeps `reply` for the calling program (replacing the last one).
 pub fn set_http(reply: Option<HttpReply>) {
     with_current(|p| p.http = reply);
@@ -664,6 +794,7 @@ pub fn interrupt_foreground() -> bool {
     match id {
         Some(id) => {
             INTERRUPTED.store(true, Ordering::Release);
+            set_status_of(id, STATUS_INTERRUPTED);
             scheduler::kill(id);
             true
         }
@@ -676,9 +807,10 @@ pub fn take_interrupted() -> bool {
     INTERRUPTED.swap(false, Ordering::AcqRel)
 }
 
-/// Whether a program started with `run` is still going.
+/// Whether a program started with `run` is still going, or hasn't been
+/// reaped yet (so its files may not be written back).
 pub fn foreground_running() -> bool {
-    TABLE.lock().processes.iter().any(|p| p.console == Console::Foreground && !p.exited)
+    TABLE.lock().processes.iter().any(|p| p.console == Console::Foreground)
 }
 
 /// A running program, for `ps` and the Task Manager.
@@ -712,6 +844,7 @@ pub fn kill(id: TaskId) -> Result<(), &'static str> {
     if !is_program {
         return Err(if scheduler::tasks().iter().any(|t| t.id == id) { "that's a kernel task, not a program" } else { "no such task" });
     }
+    set_status_of(id, STATUS_KILLED);
     scheduler::kill(id);
     Ok(())
 }
@@ -842,7 +975,7 @@ pub mod tests {
             assert!(new.memory.is_mapped(STACK_TOP - STACK_INITIAL, STACK_INITIAL));
             assert!(!new.memory.is_mapped(STACK_TOP - STACK_INITIAL - PAGE_SIZE, 1), "more stack than it starts with");
             let stub = new.memory.page_at(EXIT_STUB).unwrap();
-            assert_eq!(unsafe { *(phys_to_virt(stub) as *const u32) }, SVC_EXIT);
+            assert_eq!(unsafe { *(phys_to_virt(stub) as *const [u32; 2]) }, EXIT_CODE);
             assert!(!new.memory.is_mapped(USER_BASE, 1), "nothing loaded yet");
         }
         assert_eq!(frame::stats().0, free_before);

@@ -33,7 +33,7 @@ void _start(void) {
         } else if (event == 4 || event == -1) {
             ui_close_window(id);
             writeln("ui_demo: bye");
-            exit();
+            exit(0);
         } else {
             sleep_ms(20);
         }

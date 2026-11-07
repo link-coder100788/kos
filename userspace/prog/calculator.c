@@ -377,7 +377,7 @@ void _start(void) {
     canvas_t cv;
     if (canvas_open(&cv, "Calculator", W, H) != 0) {
         writeln("calculator: couldn't open a canvas");
-        exit();
+        exit(0);
     }
     clear();
     int hover_r = -1, hover_c = -1, down = 0, changed = 1;
@@ -389,7 +389,7 @@ void _start(void) {
             switch (e.kind) {
             case CANVAS_CLOSED:
                 canvas_close(&cv);
-                exit();
+                exit(0);
             case CANVAS_MOUSE_MOVE:
                 if (!button_at(e.x, e.y, &hover_r, &hover_c)) hover_r = hover_c = -1;
                 break;
@@ -406,7 +406,7 @@ void _start(void) {
                 break;
             case CANVAS_KEY: {
                 int k = e.key;
-                if (k == 'q') { canvas_close(&cv); exit(); }
+                if (k == 'q') { canvas_close(&cv); exit(0); }
                 if (k >= 'A' && k <= 'Z') k += 'a' - 'A';
                 if (is_digit((char)k) || is_letter((char)k) || k == '.' || k == '(' || k == ')' || is_operator((char)k)) type_char((char)k);
                 else if (k == '\n' || k == '=') equals();

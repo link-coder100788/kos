@@ -59,5 +59,5 @@ void _start(void) {
     check("a bad pointer is an error, not a crash", sha256((void*)0x10, 64, hash) == -1);
 
     printf(failures ? "%d FAILED\n" : "all passed\n", failures);
-    exit();
+    exit(0);
 }

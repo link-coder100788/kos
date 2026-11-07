@@ -2,8 +2,7 @@
 #include "syscall.h"
 
 __attribute__((noreturn)) void exit(int status) {
-    (void)status;
-    KOS_SVC(0x0, 0, 0, 0, 0, 0, 0);
+    KOS_SVC(0x0, 0, status, 0, 0, 0, 0);
     __builtin_unreachable();
 }
 
@@ -152,6 +151,10 @@ long spawn(const char* path, const char* args) {
     return (long)SVC(0xd, 0, path, args, 0, 0);
 }
 
+long spawn_io(const char* path, const char* args, const int fds[3]) {
+    return (long)SVC(0xd, 6, path, args, fds, 0);
+}
+
 long proc_wait(long id) {
     return (long)SVC(0xd, 1, id, 0, 0, 0);
 }
@@ -172,6 +175,81 @@ int proc_running(long id) {
 
 long proc_self(void) {
     return (long)SVC(0xd, 3, 0, 0, 0, 0);
+}
+
+// ---- file descriptors --------------------------------------------------------------
+
+long fd_open(const char* path, int flags) {
+    return (long)SVC(0x11, 0, path, c_strlen(path), flags, 0);
+}
+
+long fd_read(long fd, void* buf, size_t max) {
+    return (long)SVC(0x11, 1, fd, buf, max, 0);
+}
+
+long fd_read_now(long fd, void* buf, size_t max) {
+    return (long)SVC(0x11, 1, fd, buf, max, 1);
+}
+
+long fd_write(long fd, const void* data, size_t len) {
+    return (long)SVC(0x11, 2, fd, data, len, 0);
+}
+
+long fd_write_now(long fd, const void* data, size_t len) {
+    return (long)SVC(0x11, 2, fd, data, len, 1);
+}
+
+long fd_close(long fd) {
+    return (long)SVC(0x11, 3, fd, 0, 0, 0);
+}
+
+long fd_seek(long fd, long offset, int whence) {
+    return (long)SVC(0x11, 4, fd, offset, whence, 0);
+}
+
+long fd_dup2(long fd, long to) {
+    return (long)SVC(0x11, 5, fd, to, 0, 0);
+}
+
+long fd_dup(long fd) {
+    return (long)SVC(0x11, 6, fd, 0, 0, 0);
+}
+
+long fd_pipe(int fds[2]) {
+    return (long)SVC(0x11, 7, fds, 0, 0, 0);
+}
+
+int fd_isatty(long fd) {
+    return (int)SVC(0x11, 8, fd, 0, 0, 0);
+}
+
+char* fd_read_all(long fd, size_t* len) {
+    size_t size = 0, cap = 4096;
+    char* data = alloc(cap + 1);
+    if (!data) return NULL;
+    for (;;) {
+        if (size == cap) {
+            char* bigger = alloc(cap * 2 + 1);
+            if (!bigger) {
+                free(data);
+                return NULL;
+            }
+            for (size_t i = 0; i < size; i++) bigger[i] = data[i];
+            free(data);
+            data = bigger;
+            cap *= 2;
+        }
+        long n = fd_read(fd, data + size, cap - size);
+        if (n < 0) {
+            free(data);
+            return NULL;
+        }
+        if (n == 0) break;
+        size += n;
+    }
+    data[size] = '\0';
+    if (len) *len = size;
+    return data;
 }
 
 // ---- time --------------------------------------------------------------------------

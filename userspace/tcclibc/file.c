@@ -1,7 +1,8 @@
-// File descriptors and FILE streams (fcntl.h, unistd.h, stdio.h) over KOS's
-// whole-file syscalls: opening a file reads all of it into memory, reads,
-// writes and seeks work on that copy, and closing writes it back if it
-// changed. Descriptors 0-2 are the console.
+// File descriptors and FILE streams (fcntl.h, unistd.h, stdio.h) over
+// the kernel's file descriptors (sys.h's fd_*): files, pipes and the
+// console. The kernel keeps an open file in memory and writes it back when
+// its last descriptor is closed. Descriptors 0-2 are stdin, stdout and
+// stderr, as whoever started the program set them up.
 
 #include "stdio.h"
 #include "stdlib.h"
@@ -15,149 +16,59 @@ int errno;
 
 // ---- file descriptors ---------------------------------------------------------
 
-#define MAX_FILES 32
-
-typedef struct {
-    int open;
-    int access;   // O_RDONLY, O_WRONLY or O_RDWR
-    int append;   // every write goes at the end
-    int changed;  // write it back on close
-    char* path;
-    char* data;
-    size_t len, cap, pos;
-} file_t;
-
-static file_t files[MAX_FILES];
-
-static file_t* get(int fd) {
-    if (fd < 3 || fd >= MAX_FILES || !files[fd].open) {
-        errno = EBADF;
-        return NULL;
-    }
-    return &files[fd];
+// Sets errno from why the kernel said the last call failed, and returns -1.
+static int failed(void) {
+    const char* why = last_error();
+    if (strstr(why, "NotFound")) errno = ENOENT;
+    else if (strstr(why, "AlreadyExists")) errno = EEXIST;
+    else if (strstr(why, "too many open files")) errno = EMFILE;
+    else if (strstr(why, "bad file descriptor") || strstr(why, "not open for")) errno = EBADF;
+    else if (strstr(why, "NotAFile") || strstr(why, "NotADirectory")) errno = EACCES;
+    else errno = EIO;
+    return -1;
 }
 
 int open(const char* path, int flags, ...) {
-    int fd = 3;
-    while (fd < MAX_FILES && files[fd].open) fd++;
-    if (fd == MAX_FILES) {
-        errno = EMFILE;
-        return -1;
-    }
-    int access = flags & O_ACCMODE;
-    int exists = fs_size(path) >= 0;
-    if (!exists && !(flags & O_CREAT)) {
-        errno = ENOENT;
-        return -1;
-    }
-    if (exists && (flags & O_CREAT) && (flags & O_EXCL)) {
-        errno = EEXIST;
-        return -1;
-    }
-    char* data = NULL;
-    size_t len = 0;
-    int truncate = (flags & O_TRUNC) && access != O_RDONLY;
-    if (exists && !truncate) {
-        data = fs_read_all(path, &len);
-        if (!data) {
-            errno = EIO;
-            return -1;
-        }
-    }
-    char* copy = strdup(path);
-    if (!copy) {
-        free(data);
-        errno = ENOMEM;
-        return -1;
-    }
-    file_t* f = &files[fd];
-    f->open = 1;
-    f->access = access;
-    f->append = (flags & O_APPEND) != 0;
-    // A new or emptied file is written even if nothing is put in it.
-    f->changed = access != O_RDONLY && (!exists || truncate);
-    f->path = copy;
-    f->data = data;
-    f->len = f->cap = len;
-    f->pos = 0;
-    return fd;
+    long fd = fd_open(path, flags);
+    return fd < 0 ? failed() : (int)fd;
 }
 
 ssize_t read(int fd, void* buf, size_t n) {
-    if (fd == 0) return 0;
-    file_t* f = get(fd);
-    if (!f) return -1;
-    if (f->access == O_WRONLY) {
-        errno = EBADF;
-        return -1;
-    }
-    if (f->pos >= f->len) return 0;
-    if (n > f->len - f->pos) n = f->len - f->pos;
-    memcpy(buf, f->data + f->pos, n);
-    f->pos += n;
-    return (ssize_t)n;
+    long got = fd_read(fd, buf, n);
+    return got < 0 ? failed() : (ssize_t)got;
 }
 
 // write() for descriptors; POSIX's name is taken by sys.h's write(str).
-static ssize_t fd_write(int fd, const void* buf, size_t n) {
-    if (fd == 1 || fd == 2) {
-        write_bytes((const uint8_t*)buf, n);
-        return (ssize_t)n;
-    }
-    file_t* f = get(fd);
-    if (!f) return -1;
-    if (f->access == O_RDONLY) {
-        errno = EBADF;
-        return -1;
-    }
-    if (f->append) f->pos = f->len;
-    size_t end = f->pos + n;
-    if (end > f->cap) {
-        size_t cap = f->cap ? f->cap : 4096;
-        while (cap < end) cap *= 2;
-        char* data = realloc(f->data, cap);
-        if (!data) {
-            errno = ENOMEM;
-            return -1;
-        }
-        f->data = data;
-        f->cap = cap;
-    }
-    // Writing past the end (after a seek) leaves zeros in the gap.
-    if (f->pos > f->len) memset(f->data + f->len, 0, f->pos - f->len);
-    memcpy(f->data + f->pos, buf, n);
-    f->pos = end;
-    if (end > f->len) f->len = end;
-    f->changed = 1;
-    return (ssize_t)n;
+static ssize_t write_fd(int fd, const void* buf, size_t n) {
+    long done = fd_write(fd, buf, n);
+    return done < 0 ? failed() : (ssize_t)done;
 }
 
 off_t lseek(int fd, off_t offset, int whence) {
-    file_t* f = get(fd);
-    if (!f) return -1;
-    off_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? (off_t)f->pos : whence == SEEK_END ? (off_t)f->len : -1;
-    if (base < 0 || base + offset < 0) {
-        errno = EINVAL;
-        return -1;
-    }
-    f->pos = (size_t)(base + offset);
-    return (off_t)f->pos;
+    long pos = fd_seek(fd, offset, whence);
+    return pos < 0 ? failed() : (off_t)pos;
 }
 
 int close(int fd) {
-    if (fd >= 0 && fd < 3) return 0;
-    file_t* f = get(fd);
-    if (!f) return -1;
-    int result = 0;
-    // fs_write needs a real pointer even for an empty file.
-    if (f->changed && fs_write(f->path, f->data ? f->data : "", f->len) < 0) {
-        errno = EIO;
-        result = -1;
-    }
-    free(f->data);
-    free(f->path);
-    memset(f, 0, sizeof(*f));
-    return result;
+    return fd_close(fd) < 0 ? failed() : 0;
+}
+
+int dup(int fd) {
+    long n = fd_dup(fd);
+    return n < 0 ? failed() : (int)n;
+}
+
+int dup2(int fd, int to) {
+    long n = fd_dup2(fd, to);
+    return n < 0 ? failed() : (int)n;
+}
+
+int pipe(int fds[2]) {
+    return fd_pipe(fds) < 0 ? failed() : 0;
+}
+
+int isatty(int fd) {
+    return fd_isatty(fd);
 }
 
 int unlink(const char* path) {
@@ -217,7 +128,7 @@ FILE* fopen(const char* path, const char* mode) {
 }
 
 int fclose(FILE* f) {
-    int result = close(f->fd);
+    int result = f >= console && f <= &console[2] ? 0 : close(f->fd);
     if (f < console || f > &console[2]) free(f);
     return result < 0 ? EOF : 0;
 }
@@ -241,7 +152,7 @@ size_t fread(void* buf, size_t size, size_t n, FILE* f) {
 
 size_t fwrite(const void* buf, size_t size, size_t n, FILE* f) {
     if (size * n == 0) return 0;
-    if (fd_write(f->fd, buf, size * n) < 0) {
+    if (write_fd(f->fd, buf, size * n) < 0) {
         f->err = 1;
         return 0;
     }
@@ -277,7 +188,7 @@ int fputs(const char* s, FILE* f) {
 }
 
 int vfprintf(FILE* f, const char* format, va_list args) {
-    if (f->fd == 1 || f->fd == 2) return vprintf(format, args);
+    if (f->fd == 1 || f->fd == 2) return vdprintf(f->fd, format, args);
     va_list again;
     va_copy(again, args);
     int n = vsnprintf(NULL, 0, format, args);

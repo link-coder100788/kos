@@ -9,8 +9,13 @@
 #include <stdarg.h>
 #include <stddef.h>
 
+// To stdout.
 int printf(const char* format, ...) __attribute__((format(printf, 1, 2)));
 int vprintf(const char* format, va_list args);
+
+// To file descriptor fd (sys.h), e.g. dprintf(STDERR_FD, ...) for errors.
+int dprintf(int fd, const char* format, ...) __attribute__((format(printf, 2, 3)));
+int vdprintf(int fd, const char* format, va_list args);
 
 // Format into buf (at most size bytes, always NUL-terminated if size > 0).
 // Returns the length the whole result would have had.

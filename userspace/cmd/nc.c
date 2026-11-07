@@ -217,21 +217,21 @@ void _start(void) {
     long len = args(arg_buffer, sizeof(arg_buffer) - 1);
     if (len < 0 || len >= (long)sizeof(arg_buffer)) {
         writeln("nc: failed to read arguments");
-        exit();
+        exit(2);
     }
     arg_buffer[len] = '\0';
     int argc = get_argv(argv, MAX_ARGS);
     nc_args_t parsed;
     if (parse_args(argc, argv, &parsed) != 0) {
-        exit();
+        exit(2);
     }
     if (parsed.help) {
         print_help();
-        exit();
+        exit(0);
     }
     if (parsed.listen && parsed.udp) (void)run_udp_listen(&parsed);
     else if (parsed.listen) (void)run_tcp_listen(&parsed);
     else if (parsed.udp) (void)run_udp(&parsed);
     else (void)run_nc(&parsed);
-    exit();
+    exit(0);
 }

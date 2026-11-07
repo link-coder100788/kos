@@ -393,7 +393,7 @@ static void draw(void) {
 static void quit(void) {
     canvas_close(&c);
     writeln("glowfly: goodnight");
-    exit();
+    exit(0);
 }
 
 static void press(void) {
@@ -414,7 +414,7 @@ static void press(void) {
 void _start(void) {
     if (canvas_open(&c, "Glowfly", W, H) != 0) {
         writeln("glowfly: couldn't open a window");
-        exit();
+        exit(0);
     }
     writeln("glowfly: space, up or click to flutter; escape quits");
     best = read_best();

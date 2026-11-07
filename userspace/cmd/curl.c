@@ -213,23 +213,21 @@ void _start(void) {
     long len = args(arg_buffer, sizeof(arg_buffer) - 1);
     if (len < 0) {
         writeln("curl: failed to read arguments");
-        exit();
+        exit(2);
     }
     if (len >= (long)sizeof(arg_buffer)) {
         writeln("curl: arguments too long");
-        exit();
+        exit(2);
     }
     arg_buffer[len] = '\0';
     int argc = get_argv(argv, MAX_ARGS);
     curl_args_t parsed;
     if (parse_args(argc, argv, &parsed) != 0) {
-        exit();
+        exit(2);
     }
     if (parsed.help) {
         print_help();
-        exit();
+        exit(0);
     }
-    int result = run_curl(&parsed);
-    (void)result;
-    exit();
+    exit(run_curl(&parsed) == 0 ? 0 : 1);
 }

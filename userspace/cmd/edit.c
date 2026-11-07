@@ -673,7 +673,7 @@ static void render(void) {
 
 static __attribute__((noreturn)) void quit(void) {
     canvas_close(&win);
-    exit();
+    exit(0);
 }
 
 // Moves the cursor; the selection goes, unless the mouse is extending it.
@@ -916,7 +916,7 @@ static __attribute__((noreturn)) void editor(void) {
     snprintf(title, sizeof title, "Edit - %s", path[0] ? base_name(path) : "untitled");
     if (canvas_open(&win, title, WIN_W, WIN_H) < 0) {
         printf("edit: couldn't open a window\n");
-        exit();
+        exit(0);
     }
     load();
     int dirty = 1;
@@ -963,7 +963,7 @@ void _start(void) {
         if (is_dir) {
             free(is_dir);
             printf("edit: %s is a folder\n", file);
-            exit();
+            exit(0);
         }
         long size = fs_size(file);
         if (size > 0) {
@@ -971,12 +971,12 @@ void _start(void) {
             long got = fs_read(file, head, sizeof head);
             if (got >= 0 && !is_text(head, got < (long)sizeof head ? got : (long)sizeof head)) {
                 printf("edit: %s isn't a text file\n", file);
-                exit();
+                exit(0);
             }
         }
     }
     char args[600];
     snprintf(args, sizeof args, "--window %s %s", cwd, file);
     if (spawn(SELF, args) < 0) printf("edit: couldn't start: %s\n", last_error());
-    exit();
+    exit(0);
 }

@@ -9,8 +9,13 @@
 #include <stdarg.h>
 #include <stddef.h>
 
+// To stdout.
 int printf(const char* format, ...) __attribute__((format(printf, 1, 2)));
 int vprintf(const char* format, va_list args);
+
+// To file descriptor fd (sys.h), e.g. dprintf(STDERR_FD, ...) for errors.
+int dprintf(int fd, const char* format, ...) __attribute__((format(printf, 2, 3)));
+int vdprintf(int fd, const char* format, va_list args);
 
 // Format into buf (at most size bytes, always NUL-terminated if size > 0).
 // Returns the length the whole result would have had.
@@ -28,8 +33,9 @@ int putchar(int c);
 
 // ---- FILE streams -------------------------------------------------------------
 // Over the file descriptors of fcntl.h / unistd.h, so an open file is a
-// copy in memory, written back by fclose(): see fcntl.h. stdout and stderr
-// both go to the console; stdin reads nothing.
+// copy in memory, written back by fclose(): see fcntl.h. stdin, stdout and
+// stderr are descriptors 0-2 (the console, unless a shell gave the program
+// a pipe or a file); fclose() leaves those open.
 
 typedef struct FILE FILE;
 extern FILE* stdin;

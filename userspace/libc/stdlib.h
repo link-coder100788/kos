@@ -2,7 +2,7 @@
 #define C_STDLIB_H
 
 // Memory, number parsing, sorting and random numbers. (exit() is in
-// sys.h, and takes no status: `exit();`.)
+// sys.h: `exit(0);`.)
 
 #include <stddef.h>
 #include "sys.h"

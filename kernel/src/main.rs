@@ -19,6 +19,7 @@ mod arch;
 mod assistant;
 mod crypto;
 mod drivers;
+mod fd;
 mod filesys;
 mod init;
 mod k;

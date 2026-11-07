@@ -10,5 +10,5 @@ void _start(void) {
         write(argv[i]);
     }
     write("\n");
-    exit();
+    exit(0);
 }

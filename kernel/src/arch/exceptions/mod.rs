@@ -68,6 +68,7 @@ pub extern "C" fn rust_sync_handler(frame: &mut TrapFrame) -> *mut TrapFrame {
         log::error!("program fault: {} (ec={:#x}) at pc {:#x}, address {:#x}; killing the program", ec_name(ec), ec, frame.elr, far);
         crate::stats::inc(&crate::stats::PROGRAMS_KILLED);
         crate::sound::ui_bonk();
+        crate::process::set_exit_status(crate::process::STATUS_FAULTED);
         return scheduler::exit_current(frame);
     }
     log::error!("KERNEL FAULT: {} (ec={:#x}) esr={:#x} pc={:#x} address={:#x} lr={:#x}", ec_name(ec), ec, esr, frame.elr, far, frame.regs[30]);

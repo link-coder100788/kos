@@ -680,7 +680,7 @@ static void draw(double dt) {
 static void quit(void) {
     canvas_close(&c);
     writeln("powder: see you on the slopes");
-    exit();
+    exit(0);
 }
 
 static void start(void) {
@@ -705,7 +705,7 @@ static void turn(int by) {
 void _start(void) {
     if (canvas_open(&c, "Powder Run", W, H) != 0 || r3d_init(&r, &c, 2) != 0) {
         writeln("powder: couldn't open a window");
-        exit();
+        exit(0);
     }
     // A bright winter's day: blue shadows on the snow, and haze far off.
     r.sun = r3d_v(-0.45f, 0.8f, -0.4f);

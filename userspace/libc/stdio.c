@@ -8,8 +8,10 @@ typedef struct {
     // Into a buffer (snprintf)...
     char* buf;
     size_t size;
-    // ...or to the console, a block at a time (printf).
+    // ...or to stdout (or descriptor fd - 1, for dprintf), a block at a
+    // time (printf).
     int console;
+    long fd;
     char pending[256];
     size_t npending;
     // Everything produced, written or not.
@@ -17,7 +19,8 @@ typedef struct {
 } out_t;
 
 static void flush(out_t* o) {
-    if (o->npending) write_bytes((const uint8_t*)o->pending, o->npending);
+    if (o->npending && o->fd) fd_write(o->fd - 1, o->pending, o->npending);
+    else if (o->npending) write_bytes((const uint8_t*)o->pending, o->npending);
     o->npending = 0;
 }
 
@@ -305,6 +308,23 @@ int printf(const char* format_str, ...) {
     va_list args;
     va_start(args, format_str);
     int n = vprintf(format_str, args);
+    va_end(args);
+    return n;
+}
+
+int vdprintf(int fd, const char* format_str, va_list args) {
+    out_t o = { 0 };
+    o.console = 1;
+    o.fd = fd + 1;
+    format(&o, format_str, args);
+    flush(&o);
+    return (int)o.len;
+}
+
+int dprintf(int fd, const char* format_str, ...) {
+    va_list args;
+    va_start(args, format_str);
+    int n = vdprintf(fd, format_str, args);
     va_end(args);
     return n;
 }

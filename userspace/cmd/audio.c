@@ -1336,7 +1336,7 @@ static int work(void) {
 __attribute__((noreturn)) static void window_main(const char* path) {
     if (load(path) < 0) {
         printf("audio: %s\n", error);
-        exit();
+        exit(0);
     }
     const char* slash = strrchr(path, '/');
     strlcpy(name, slash ? slash + 1 : path, sizeof name);
@@ -1344,7 +1344,7 @@ __attribute__((noreturn)) static void window_main(const char* path) {
     snprintf(title, sizeof title, "Audio - %s", name);
     if (canvas_open(&win, title, WIN_W, WIN_H) < 0) {
         printf("audio: couldn't open a window\n");
-        exit();
+        exit(0);
     }
     base = alloc(sizeof(uint32_t) * WIN_W * WIN_H);
     spectro_db = alloc(sizeof(float) * PW * PH);
@@ -1361,7 +1361,7 @@ __attribute__((noreturn)) static void window_main(const char* path) {
             if (e.kind == CANVAS_CLOSED) {
                 play_stop();
                 canvas_close(&win);
-                exit();
+                exit(0);
             }
             if (e.kind == CANVAS_KEY) key(e.key);
             else mouse(&e);
@@ -1397,13 +1397,13 @@ void _start(void) {
 
     if (!strncmp(arg, "--play ", 7)) {
         if (play_file(arg + 7) < 0) printf("audio: can't play: %s\n", last_error());
-        exit();
+        exit(0);
     }
     if (!strncmp(arg, "--window ", 9)) window_main(arg + 9);
 
     if (!*arg) {
         printf("usage: audio <file>   (WAV, AIFF or AU)\n");
-        exit();
+        exit(0);
     }
     // Started from a shell, which waits for us: check the file, then open
     // the window as our own child, with an absolute path, and end so the
@@ -1418,10 +1418,10 @@ void _start(void) {
     }
     if (load(path) < 0) {
         printf("audio: %s\n", error);
-        exit();
+        exit(0);
     }
     char window_args[420];
     snprintf(window_args, sizeof window_args, "--window %s", path);
     if (spawn(SELF, window_args) < 0) printf("audio: couldn't start: %s\n", last_error());
-    exit();
+    exit(0);
 }

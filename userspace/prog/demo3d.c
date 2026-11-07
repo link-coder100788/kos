@@ -120,7 +120,7 @@ static void setup(int new_scale) {
     r3d_free(&r);
     if (r3d_init(&r, &c, new_scale) != 0) {
         writeln("demo3d: out of memory");
-        exit();
+        exit(0);
     }
     scale = new_scale;
     r.sky_top = rgb(70, 120, 210);
@@ -132,7 +132,7 @@ static void setup(int new_scale) {
 void _start(void) {
     if (canvas_open(&c, "3D demo", W, H) != 0) {
         writeln("demo3d: couldn't open a window");
-        exit();
+        exit(0);
     }
     setup(scale);
 
@@ -204,5 +204,5 @@ quit:
     r3d_free(&r);
     canvas_close(&c);
     writeln("demo3d: bye");
-    exit();
+    exit(0);
 }

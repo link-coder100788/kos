@@ -96,42 +96,78 @@ fn may_print() -> bool {
     crate::process::console() != Some(Console::Detached)
 }
 
+/// `exit(status)`. The program's files are closed (and written back)
+/// before it ends.
 #[syscall(0)]
 pub fn syscall_exit(frame: &mut SyscallContext) {
+    crate::process::set_exit_status(frame[0] as i32);
+    drop(crate::process::fd_take_all());
     frame.request = Request::Exit as u64;
+}
+
+/// Writes to the caller's stdout; a kernel task's go to the console.
+fn write_stdout(bytes: &[u8]) {
+    match crate::process::fd_get(1) {
+        Some(out) => { let _ = out.write(bytes, true); }
+        None if crate::process::console().is_none() => crate::drivers::uart::console_write(bytes),
+        None => {}
+    }
 }
 
 #[syscall(1)]
 pub fn syscall_write_byte(frame: &mut SyscallContext) {
-    if may_print() {
-        crate::drivers::uart::console_write(&[frame.regs[0] as u8]);
-    }
+    write_stdout(&[frame.regs[0] as u8]);
 }
 
 #[syscall(2)]
 pub fn syscall_write_bytes(frame: &mut SyscallContext) {
     // Returns nothing: the libc doesn't expect x0 to change.
     if let Some(bytes) = user_bytes(frame, frame[0], frame[1]) {
-        if may_print() {
-            crate::drivers::uart::console_write(bytes);
-        }
+        write_stdout(bytes);
     }
 }
 
+/// Reads a line from stdin, without its newline: its length, or u64::MAX
+/// at the end of the input (only a pipe or file has one). A line longer
+/// than the buffer is cut short.
 #[syscall(3)]
 pub fn syscall_read_line(frame: &mut SyscallContext) {
-    // Only a program started with `run` has the console: the shell is
-    // waiting for it to finish, so it can read the console directly.
-    // Anyone else gets no input.
     let Some(buf) = user_bytes_mut(frame, frame[0], frame[1]) else { frame[0] = u64::MAX; return };
-    if crate::process::console() != Some(Console::Foreground) {
-        frame[0] = 0;
+    let Some(stdin) = crate::process::fd_get(0) else { frame[0] = u64::MAX; return };
+    if stdin.is_console() {
+        // Only a program started with `run` has the console: the shell is
+        // waiting for it to finish, so it can read the console directly.
+        // Anyone else gets no input.
+        if crate::process::console() != Some(Console::Foreground) {
+            frame[0] = 0;
+            return;
+        }
+        let line = Uart {}.read_s_unless(scheduler::current_killed).unwrap_or_default();
+        let len = line.len().min(buf.len());
+        buf[..len].copy_from_slice(&line.as_bytes()[..len]);
+        frame[0] = len as u64;
         return;
     }
-    let line = Uart {}.read_s_unless(scheduler::current_killed).unwrap_or_default();
-    let len = line.len().min(buf.len());
-    buf[..len].copy_from_slice(&line.as_bytes()[..len]);
-    frame[0] = len as u64;
+    let (mut len, mut any) = (0, false);
+    loop {
+        let mut byte = [0u8];
+        match stdin.read(&mut byte, true) {
+            Ok(Some(1)) => {}
+            _ => break,
+        }
+        any = true;
+        if byte[0] == b'\n' {
+            break;
+        }
+        if len < buf.len() {
+            buf[len] = byte[0];
+            len += 1;
+        }
+    }
+    if len > 0 && buf[len - 1] == b'\r' {
+        len -= 1;
+    }
+    frame[0] = if any { len as u64 } else { u64::MAX };
 }
 
 // ---- memory --------------------------------------------------------------------
@@ -255,6 +291,86 @@ pub fn syscall_filesystem(frame: &mut SyscallContext) {
         },
         _ => { log::warn!("filesystem syscall: unknown sub-command {}", syscall_num); u64::MAX }
     };
+}
+
+// ---- file descriptors -------------------------------------------------------------
+
+mod fds {
+    use kos_derive::const_unique;
+
+    pub const OPEN: u64 = 0;   // (path, len, flags) -> fd
+    pub const READ: u64 = 1;   // (fd, buf, max, dont_wait) -> bytes read; 0 = end of input; u64::MAX - 1 = nothing yet
+    pub const WRITE: u64 = 2;  // (fd, data, len, dont_wait) -> bytes written; u64::MAX - 1 = no room yet
+    pub const CLOSE: u64 = 3;  // (fd) -> 0
+    pub const SEEK: u64 = 4;   // (fd, offset, whence) -> the new position
+    pub const DUP2: u64 = 5;   // (fd, to) -> to
+    pub const DUP: u64 = 6;    // (fd) -> a new fd for the same thing
+    pub const PIPE: u64 = 7;   // (int[2]) -> 0; [0] reads what [1] writes
+    pub const ISATTY: u64 = 8; // (fd) -> 1 if it's the console, else 0
+
+    const_unique!(OPEN, READ, WRITE, CLOSE, SEEK, DUP2, DUP, PIPE, ISATTY);
+}
+
+/// File descriptors (see `fd`): files, pipes and the console. Only
+/// programs have them. Errors return u64::MAX, with the reason kept for
+/// `last_error`.
+#[syscall(17)]
+pub fn syscall_fd(frame: &mut SyscallContext) {
+    use crate::process::{fd_add, fd_get, fd_set, fd_take};
+    let syscall_num = frame[16];
+    let get = |fd: u64| fd_get(fd).ok_or_else(|| alloc::string::String::from("bad file descriptor"));
+    let result: Result<u64, alloc::string::String> = match syscall_num {
+        fds::OPEN => match user_str(frame, frame[0], frame[1]) {
+            Some(path) => crate::fd::open(current_cwd(), path, frame[2])
+                .and_then(|f| fd_add(f).map_err(|_| "too many open files".to_string())),
+            None => Err("bad path".to_string()),
+        },
+        fds::READ => match (get(frame[0]), user_bytes_mut(frame, frame[1], frame[2])) {
+            (Ok(f), Some(buf)) => f.read(buf, frame[3] == 0).map(|n| n.map_or(u64::MAX - 1, |n| n as u64)),
+            (Err(e), _) => Err(e),
+            (_, None) => Err("bad buffer".to_string()),
+        },
+        fds::WRITE => match (get(frame[0]), user_bytes(frame, frame[1], frame[2])) {
+            (Ok(f), Some(data)) => f.write(data, frame[3] == 0).map(|n| n.map_or(u64::MAX - 1, |n| n as u64)),
+            (Err(e), _) => Err(e),
+            (_, None) => Err("bad buffer".to_string()),
+        },
+        fds::CLOSE => match fd_take(frame[0]) {
+            // The last descriptor for a file writes it back, and says if
+            // that failed.
+            Some(f) => match alloc::sync::Arc::try_unwrap(f) {
+                Ok(object) => object.flush().map(|()| 0),
+                Err(_) => Ok(0),
+            },
+            None => Err("bad file descriptor".to_string()),
+        },
+        fds::SEEK => get(frame[0]).and_then(|f| f.seek(frame[1] as i64, frame[2])),
+        fds::DUP2 => get(frame[0]).and_then(|f| match fd_set(frame[1], f) {
+            Ok(old) => { drop(old); Ok(frame[1]) }
+            Err(_) => Err("bad file descriptor".to_string()),
+        }),
+        fds::DUP => get(frame[0]).and_then(|f| fd_add(f).map_err(|_| "too many open files".to_string())),
+        fds::PIPE => {
+            if !user_ok(frame, frame[0], 8, 4) || !frame.is_user() {
+                Err("bad buffer".to_string())
+            } else {
+                let (r, w) = crate::fd::pipe();
+                match fd_add(r) {
+                    Err(_) => Err("too many open files".to_string()),
+                    Ok(rfd) => match fd_add(w) {
+                        Err(_) => { drop(fd_take(rfd)); Err("too many open files".to_string()) }
+                        Ok(wfd) => {
+                            unsafe { (frame[0] as *mut [i32; 2]).write([rfd as i32, wfd as i32]) };
+                            Ok(0)
+                        }
+                    },
+                }
+            }
+        }
+        fds::ISATTY => Ok(fd_get(frame[0]).is_some_and(|f| f.is_console()) as u64),
+        _ => Err(format!("unknown file descriptor call {}", syscall_num)),
+    };
+    frame[0] = result.unwrap_or_else(|e| fail(&e));
 }
 
 // ---- windows -------------------------------------------------------------------
@@ -804,30 +920,54 @@ pub fn syscall_net(frame: &mut SyscallContext) {
 mod proc {
     use kos_derive::const_unique;
 
-    pub const SPAWN: u64 = 0;      // (path, args) -> task id
-    pub const WAIT: u64 = 1;       // (id) -> 0 once it has ended
+    pub const SPAWN: u64 = 0;      // (path, args) -> task id; it gets the caller's stdin, stdout and stderr
+    pub const WAIT: u64 = 1;       // (id) -> its exit status, once it has ended
     pub const KILL: u64 = 2;       // (id) -> 0
     pub const SELF_ID: u64 = 3;    // -> the caller's task id
     pub const RUNNING: u64 = 4;    // (id) -> 1 if it's a program still running, else 0
     pub const LAST_ERROR: u64 = 5; // (buf, max) -> why the last call failed, as text
+    pub const SPAWN_IO: u64 = 6;   // (path, args, int fds[3]) -> task id; its stdin, stdout and stderr are the caller's fds[0..3] (-1: the same one)
 
-    const_unique!(SPAWN, WAIT, KILL, SELF_ID, RUNNING, LAST_ERROR);
+    const_unique!(SPAWN, WAIT, KILL, SELF_ID, RUNNING, LAST_ERROR, SPAWN_IO);
 }
 
 #[syscall(13)]
 pub fn syscall_process(frame: &mut SyscallContext) {
     let syscall_num = frame[16];
     frame[0] = match syscall_num {
-        proc::SPAWN => {
+        proc::SPAWN | proc::SPAWN_IO => {
             let args = if frame[1] == 0 { Some("") } else { user_cstr(frame, frame[1]) };
             let (Some(path), Some(args)) = (user_cstr(frame, frame[0]), args) else { frame[0] = fail("bad path"); return };
-            // A program it starts prints where it does, but never takes
-            // the keyboard from it.
+            // Which of the caller's descriptors become the program's 0-2.
+            let mut from = [0i32, 1, 2];
+            if syscall_num == proc::SPAWN_IO {
+                if !user_ok(frame, frame[2], 12, 4) {
+                    frame[0] = fail("bad fds");
+                    return;
+                }
+                let given = unsafe { (frame[2] as *const [i32; 3]).read() };
+                for i in 0..3 {
+                    if given[i] >= 0 {
+                        from[i] = given[i];
+                    }
+                }
+            }
+            let stdio = if frame.is_user() {
+                let fds = from.map(|n| crate::process::fd_get(n as u64));
+                if syscall_num == proc::SPAWN_IO && fds.iter().any(Option::is_none) {
+                    frame[0] = fail("bad file descriptor");
+                    return;
+                }
+                Some(fds.map(|f| f.unwrap_or_else(crate::fd::null)))
+            } else {
+                None
+            };
+            // A program it starts never takes the keyboard from it.
             let console = match crate::process::console() {
                 Some(Console::Detached) => Console::Detached,
                 _ => Console::Output,
             };
-            match crate::loader::spawn(path, args, console) {
+            match crate::loader::spawn(path, args, console, stdio) {
                 Ok(id) => id as u64,
                 Err(e) => fail(&format!("{}: {}", path, e)),
             }
@@ -838,8 +978,12 @@ pub fn syscall_process(frame: &mut SyscallContext) {
                 frame[0] = fail("a program can't wait for itself");
                 return;
             }
-            crate::process::EXITED.wait_until(|| !crate::process::is_running(id) || scheduler::current_killed());
-            0
+            crate::process::EXITED.wait_until(|| crate::process::exit_status(id).is_some() || scheduler::current_killed());
+            match crate::process::exit_status(id) {
+                Some(Some(status)) => status as u64,
+                Some(None) => fail("no such program"),
+                None => u64::MAX,
+            }
         }
         proc::KILL => match crate::process::kill(frame[0] as scheduler::TaskId) {
             Ok(()) => 0,
@@ -981,8 +1125,8 @@ pub fn dispatch_syscall(num: u64, frame: &mut SyscallContext) -> bool {
         return true;
     }
     let name = entry.name.trim_start_matches("syscall_");
-    // Syscalls 4-7, 12-13 and 15 take a sub-command in x16.
-    if (4..=7).contains(&num) || (12..=13).contains(&num) || num == 15 {
+    // Syscalls 4-7, 12-13 and 15-17 take a sub-command in x16.
+    if (4..=7).contains(&num) || (12..=13).contains(&num) || (15..=17).contains(&num) {
         log::trace!("{} (svc {}) sub={} x0={:#x} x1={:#x} x2={:#x} x3={:#x}", name, num, frame[16], frame[0], frame[1], frame[2], frame[3]);
     } else {
         log::trace!("{} (svc {}) x0={:#x} x1={:#x} x2={:#x} x3={:#x}", name, num, frame[0], frame[1], frame[2], frame[3]);

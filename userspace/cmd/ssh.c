@@ -50,7 +50,7 @@ enum {
 
 static void fail(const char* what) {
     printf("ssh: %s\n", what);
-    exit();
+    exit(0);
 }
 
 // ---- base64 --------------------------------------------------------------------------
@@ -350,7 +350,7 @@ static bool recv_packet(buf_t* out, bool wait) {
             char why[256];
             get_cstr(&r, why, sizeof why);
             printf("ssh: the server disconnected: %s\n", why);
-            exit();
+            exit(0);
         }
         case MSG_KEXINIT:
             if (ssh.have_session_id) {
@@ -389,7 +389,7 @@ static void exchange_versions(void) {
         if (is_version) {
             if (strncmp(ssh.server_version, "SSH-2.0-", 8) != 0 && strncmp(ssh.server_version, "SSH-1.99-", 9) != 0) {
                 printf("ssh: the server only speaks %s\n", ssh.server_version);
-                exit();
+                exit(0);
             }
             return;
         }
@@ -433,7 +433,7 @@ static void check_kexinit(const uint8_t* data, size_t len) {
                          : list_has(list, n, "aes256-gcm@openssh.com");
         if (!ok) {
             printf("ssh: the server doesn't offer %s; it offers: %.*s\n", needs[i], (int)n, list);
-            exit();
+            exit(0);
         }
     }
     for (int i = 0; i < 2; i++) get_string(&r, &(uint32_t){0}); // MACs
@@ -484,7 +484,7 @@ static void check_host_key(const uint8_t* blob, size_t blob_len) {
                 printf("ssh: WARNING: %s's host key has CHANGED!\n", who);
                 printf("Someone could be pretending to be it. Its key is now %s ssh-ed25519 SHA256:%s.\n", who, fingerprint);
                 printf("If you know why it changed, remove its line from %s and connect again.\n", KNOWN_HOSTS);
-                exit();
+                exit(0);
             }
         }
         line = end ? end + 1 : line + strlen(line);
@@ -523,7 +523,7 @@ static void kex(const uint8_t* server_kexinit, size_t server_kexinit_len) {
             recv_packet(&theirs, true);
             if (theirs.data[0] == MSG_KEXINIT) break;
             printf("ssh: expected the server's KEXINIT, got message %d\n", theirs.data[0]);
-            exit();
+            exit(0);
         }
     }
     check_kexinit(theirs.data, theirs.len);
@@ -545,7 +545,7 @@ static void kex(const uint8_t* server_kexinit, size_t server_kexinit_len) {
     }
     if (p.data[0] != MSG_KEX_ECDH_REPLY) {
         printf("ssh: expected the key exchange reply, got message %d\n", p.data[0]);
-        exit();
+        exit(0);
     }
     reader_t r = reader(p.data, p.len);
     get_u8(&r);
@@ -663,7 +663,7 @@ static int auth_reply(buf_t* p, char* methods, size_t max) {
             continue;
         default:
             printf("ssh: unexpected message %d while logging in\n", type);
-            exit();
+            exit(0);
         }
     }
 }
@@ -701,7 +701,7 @@ static int try_password(const char* user, buf_t* p, char* methods, size_t max) {
     if (result == -1) {
         // In reply to "password", message 60 means the password has expired.
         writeln("ssh: the server says the password has expired; change it another way first");
-        exit();
+        exit(0);
     }
     return result;
 }
@@ -763,7 +763,7 @@ static void log_in(const char* user) {
             result = try_keyboard_interactive(user, &p, methods, sizeof methods);
         } else {
             printf("ssh: the server only takes: %s (KOS's ssh can only use a password)\n", methods);
-            exit();
+            exit(0);
         }
         if (result == 1) {
             buf_free(&p);
@@ -772,7 +772,7 @@ static void log_in(const char* user) {
         writeln("Permission denied, please try again.");
     }
     printf("ssh: %s@%s: permission denied\n", user, host_name);
-    exit();
+    exit(0);
 }
 
 // ---- the session -------------------------------------------------------------------
@@ -946,14 +946,14 @@ static void open_channel(void) {
             char why[256];
             get_cstr(&r, why, sizeof why);
             printf("ssh: the server won't open a session: %s\n", why);
-            exit();
+            exit(0);
         }
         if (type == MSG_GLOBAL_REQUEST || type == MSG_EXT_INFO) {
             if (type == MSG_GLOBAL_REQUEST) handle_channel_packet(&p);
             continue;
         }
         printf("ssh: unexpected message %d opening a session\n", type);
-        exit();
+        exit(0);
     }
     buf_free(&p);
 }
@@ -1096,12 +1096,12 @@ void _start(void) {
             i += 2;
         } else {
             print_help();
-            exit();
+            exit(0);
         }
     }
     if (i >= argc) {
         print_help();
-        exit();
+        exit(0);
     }
     char* at = strrchr(argv[i], '@');
     if (!at || at == argv[i] || !at[1]) fail("expected user@host");
@@ -1118,7 +1118,7 @@ void _start(void) {
     ssh.tcp = tcp_connect(host_name, host_port);
     if (ssh.tcp < 0) {
         printf("ssh: can't connect to %s port %d: %s\n", host_name, host_port, last_error());
-        exit();
+        exit(0);
     }
     exchange_versions();
     kex(NULL, 0);
@@ -1130,5 +1130,5 @@ void _start(void) {
     tcp_close(ssh.tcp);
     if (command[0] && ssh.exit_status > 0) printf("ssh: the command exited with status %ld\n", ssh.exit_status);
     else if (!command[0]) printf("Connection to %s closed.\n", host_name);
-    exit();
+    exit(0);
 }

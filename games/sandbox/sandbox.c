@@ -471,7 +471,7 @@ static void draw(void) {
 static void quit(void) {
     canvas_close(&c);
     writeln("sandbox: bye");
-    exit();
+    exit(0);
 }
 
 // The tool under a click on the toolbar, or -1.
@@ -532,7 +532,7 @@ static void mouse(const canvas_event_t* e) {
 void _start(void) {
     if (canvas_open(&c, "Sandbox", W, H) != 0) {
         writeln("sandbox: couldn't open a window");
-        exit();
+        exit(0);
     }
     writeln("sandbox: left-drag paints, right-drag erases, 1-9 0 - pick; escape quits");
     seed ^= uptime_ms() * 0x9e3779b97f4a7c15ull;

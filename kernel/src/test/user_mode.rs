@@ -66,7 +66,7 @@ fn kbin(code: &[u32]) -> Vec<u8> {
 }
 
 fn start(code: &[u32]) -> TaskId {
-    loader::start_image("test", "", &kbin(code), true, Console::Detached).expect("starting a test program")
+    loader::start_image("test", "", &kbin(code), true, Console::Detached, None).expect("starting a test program")
 }
 
 fn running(id: TaskId) -> bool {
@@ -231,9 +231,15 @@ fn test_stack_grows_on_demand() {
 
 fn test_syscall_buffer_on_untouched_stack() {
     // read_line into a buffer 1 MiB down the stack, never touched: the
-    // kernel must grow the stack, not call the pointer bad.
+    // kernel must grow the stack, not call the pointer bad. (It's given a
+    // line to read: at the end of its input it would get -1 too.)
     let code = [SUB_SP_1M, MOV_X0_SP, movz(1, 64, 0), svc(3), CMN_X0_1, B_NE_SKIP, BRK, EXIT];
-    assert!(!run_to_end(&code));
+    let (r, w) = crate::fd::pipe();
+    w.write(b"line\n", true).unwrap();
+    let killed_before = PROGRAMS_KILLED.load(Ordering::Relaxed);
+    let id = start_with(&code, [r, crate::fd::null(), crate::fd::null()]);
+    assert!(ended_within(id, 2000), "test program didn't end");
+    assert_eq!(PROGRAMS_KILLED.load(Ordering::Relaxed), killed_before);
 }
 
 fn test_kill_ends_a_looping_program() {
@@ -326,6 +332,65 @@ fn test_wakeups_reach_program_cores_quickly() {
     assert!(took < 150, "five 10 ms sleeps took {} ms", took);
 }
 
+// ---- exit statuses and file descriptors -------------------------------------------
+
+/// Waits up to `ms` for program `id` to end and be reaped, and returns its
+/// exit status.
+fn status_within(id: TaskId, ms: u64) -> i32 {
+    for _ in 0..ms / 10 {
+        if let Some(status) = process::exit_status(id) {
+            return status.expect("an ended program has a status");
+        }
+        sleep_ms(10);
+    }
+    panic!("program {} didn't end", id);
+}
+
+/// Starts `code` with `stdio` as its stdin, stdout and stderr.
+fn start_with(code: &[u32], stdio: [crate::fd::Fd; 3]) -> TaskId {
+    loader::start_image("test", "", &kbin(code), true, Console::Detached, Some(stdio)).expect("starting a test program")
+}
+
+fn test_exit_status() {
+    assert_eq!(status_within(start(&[movz(0, 42, 0), EXIT]), 2000), 42);
+    assert_eq!(status_within(start(&[movz(0, 0x1ff, 0), EXIT]), 2000), 0xff, "kept to 0-255");
+    assert_eq!(status_within(start(&[movz(0, 7, 0), RET]), 2000), 0, "returning from _start is exit(0)");
+    assert_eq!(status_within(start(&[BRK]), 2000), process::STATUS_FAULTED);
+    let looping = start(&[LOOP]);
+    sleep_ms(20);
+    process::kill(looping).unwrap();
+    assert_eq!(status_within(looping, 2000), process::STATUS_KILLED);
+}
+
+fn test_stdout_goes_into_a_pipe() {
+    // write_bytes("hi there", 8), then exit; the text sits after the code.
+    let text = b"hi there";
+    let mut code = Vec::from(mov64(0, 0));
+    code.extend([movz(1, text.len() as u32, 0), svc(2), movz(0, 0, 0), EXIT]);
+    let data_at = USER_BASE as u64 + code.len() as u64 * 4;
+    code[..4].copy_from_slice(&mov64(0, data_at));
+    code.extend(text.chunks(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())));
+    let (r, w) = crate::fd::pipe();
+    let id = start_with(&code, [crate::fd::null(), w, crate::fd::null()]);
+    assert_eq!(status_within(id, 2000), 0);
+    let mut buf = [0u8; 32];
+    assert_eq!(r.read(&mut buf, true), Ok(Some(text.len())));
+    assert_eq!(&buf[..text.len()], text);
+    assert_eq!(r.read(&mut buf, true), Ok(Some(0)), "the program's end closed the pipe's write end");
+}
+
+fn test_read_line_from_a_pipe() {
+    // readln(sp - 64, 64), then exit with its result as the status.
+    let code = [0xd101_03ff /* sub sp, sp, #64 */, MOV_X0_SP, movz(1, 64, 0), svc(3), EXIT];
+    let (r, w) = crate::fd::pipe();
+    w.write(b"hello\nnext\n", true).unwrap();
+    drop(w);
+    assert_eq!(status_within(start_with(&code, [r, crate::fd::null(), crate::fd::null()]), 2000), 5, "the first line, without its newline");
+    let (r, w) = crate::fd::pipe();
+    drop(w);
+    assert_eq!(status_within(start_with(&code, [r, crate::fd::null(), crate::fd::null()]), 2000), 0xff, "-1 at the end of the input");
+}
+
 fn test_kernel_tasks_cant_be_killed() {
     let shell = scheduler::tasks().iter().find(|t| t.name == "shell").map(|t| t.id).unwrap();
     assert!(process::kill(shell).is_err());
@@ -351,15 +416,24 @@ fn remove_file(path: &str) {
 }
 
 /// Runs program `path` with `args`, detached, and waits up to `ms` for it.
-fn run_program(path: &str, args: &str, ms: u64) {
-    let id = loader::spawn(path, args, Console::Detached).unwrap_or_else(|e| panic!("can't run {}: {}", path, e));
-    assert!(ended_within(id, ms), "{} didn't end", path);
+/// Returns its exit status, and what it printed (stdout and stderr).
+fn run_program(path: &str, args: &str, ms: u64) -> (i32, String) {
+    let (r, w) = crate::fd::pipe();
+    let stdio = [crate::fd::null(), w.clone(), w];
+    let id = loader::spawn(path, args, Console::Detached, Some(stdio)).unwrap_or_else(|e| panic!("can't run {}: {}", path, e));
+    let status = status_within(id, ms);
+    let mut printed = Vec::new();
+    let mut buf = [0u8; 512];
+    while let Ok(Some(n @ 1..)) = r.read(&mut buf, false) {
+        printed.extend_from_slice(&buf[..n]);
+    }
+    (status, String::from_utf8_lossy(&printed).into_owned())
 }
 
 /// /bin/tcc (from `make disk`) compiles a C program on KOS, and what it
 /// makes runs. A detached program's output goes nowhere, so the program
 /// writes its answer to a file. A program that doesn't compile gives no
-/// output file (KOS has no exit statuses to say so).
+/// output file, and tcc fails.
 fn test_tcc_compiles_and_runs_a_program() {
     const TCC: &str = "/bin/tcc.elf.b64";
     const SOURCE: &str = "/tcc-test.c";
@@ -382,15 +456,19 @@ int main(int argc, char** argv) {
     return 0;
 }
 "#);
-    run_program(TCC, &alloc::format!("-o {} {}", PROGRAM, SOURCE), 30_000);
+    let (status, printed) = run_program(TCC, &alloc::format!("-o {} {}", PROGRAM, SOURCE), 30_000);
+    assert_eq!(status, 0, "tcc failed: {}", printed);
     assert!(read_file(PROGRAM).is_some(), "tcc made no program");
-    run_program(PROGRAM, "hello abc", 5_000);
+    let (status, printed) = run_program(PROGRAM, "hello abc", 5_000);
+    assert_eq!(status, 0, "the program failed: {}", printed);
     let result = read_file(RESULT).map(|d| String::from_utf8_lossy(&d).into_owned());
     assert_eq!(result.as_deref(), Some("64 hello 3"));
 
     write_file(SOURCE, "int main(void) { return nothing_called_this; }\n");
     remove_file(PROGRAM);
-    run_program(TCC, &alloc::format!("-o {} {}", PROGRAM, SOURCE), 30_000);
+    let (status, printed) = run_program(TCC, &alloc::format!("-o {} {}", PROGRAM, SOURCE), 30_000);
+    assert_ne!(status, 0, "tcc succeeded on code with an error");
+    assert!(printed.contains("nothing_called_this"), "tcc didn't say what was wrong: {}", printed);
     assert!(read_file(PROGRAM).is_none(), "tcc made a program from code with an error");
     for path in [SOURCE, PROGRAM, RESULT] {
         remove_file(path);
@@ -424,6 +502,9 @@ pub fn run() {
         &test_programs_run_in_parallel,
         &test_wakeups_reach_program_cores_quickly,
         &test_kernel_tasks_cant_be_killed,
+        &test_exit_status,
+        &test_stdout_goes_into_a_pipe,
+        &test_read_line_from_a_pipe,
         &test_tcc_compiles_and_runs_a_program,
     ]);
 }

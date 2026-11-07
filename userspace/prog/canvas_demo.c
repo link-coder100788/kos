@@ -36,14 +36,14 @@ static void stroke(canvas_t* c, int x0, int y0, int x1, int y1, uint32_t color) 
 static void quit(canvas_t* c) {
     canvas_close(c);
     writeln("canvas_demo: bye");
-    exit();
+    exit(0);
 }
 
 void _start(void) {
     canvas_t c;
     if (canvas_open(&c, "Canvas Demo", W, H) != 0) {
         writeln("canvas_demo: couldn't open a canvas");
-        exit();
+        exit(0);
     }
     paper = alloc_z(W * H * sizeof(uint32_t));
     paper_clear();

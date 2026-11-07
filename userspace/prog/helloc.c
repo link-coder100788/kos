@@ -11,7 +11,7 @@ void _start(void) {
     writeln("");
     char buf[256];
     long bytes_read = readln(buf, sizeof(buf) - 1);
-    buf[bytes_read] = '\0';
+    buf[bytes_read < 0 ? 0 : bytes_read] = '\0';
     writeln(buf);
-    exit();
+    exit(0);
 }

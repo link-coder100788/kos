@@ -534,7 +534,7 @@ static void on_click(int x, int y) {
 static __attribute__((noreturn)) void explorer(const char* start) {
     if (canvas_open(&win, "Files", WIN_W, WIN_H) < 0) {
         printf("files: couldn't open a window\n");
-        exit();
+        exit(0);
     }
     if (start) strlcpy(cwd, start, sizeof cwd);
     load(NULL);
@@ -544,7 +544,7 @@ static __attribute__((noreturn)) void explorer(const char* start) {
         while (canvas_poll(&win, &e) > 0) {
             if (e.kind == CANVAS_CLOSED) {
                 canvas_close(&win);
-                exit();
+                exit(0);
             }
             if (e.kind == CANVAS_KEY) on_key(e.key);
             else if (e.kind == CANVAS_MOUSE_DOWN && e.buttons == CANVAS_LEFT) on_click(e.x, e.y);
@@ -579,11 +579,11 @@ void _start(void) {
     fs_entry_t* check = fs_list(start, &n);
     if (!check) {
         printf("files: no folder %s\n", start);
-        exit();
+        exit(0);
     }
     free(check);
     char args[300];
     snprintf(args, sizeof args, "--window %s", start);
     if (spawn(SELF, args) < 0) printf("files: couldn't start: %s\n", last_error());
-    exit();
+    exit(0);
 }

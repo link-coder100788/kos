@@ -8,5 +8,5 @@ void _start(void) {
     while (1) {
         if (argc == 1) { writeln(argv[0]); } else { write("yes"); }
     }
-    exit();
+    exit(0);
 }

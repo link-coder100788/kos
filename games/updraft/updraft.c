@@ -671,7 +671,7 @@ static void quit(void) {
     snd(0);
     canvas_close(&c);
     writeln("updraft: happy landings");
-    exit();
+    exit(0);
 }
 
 static void start(void) {
@@ -690,7 +690,7 @@ static void press_action(void) {
 void _start(void) {
     if (canvas_open(&c, "Updraft", W, H) != 0 || r3d_init(&r, &c, 2) != 0) {
         writeln("updraft: couldn't open a window");
-        exit();
+        exit(0);
     }
     // Dusk: a low sun down the canyon, warm light, purple shadows.
     r.sun = r3d_v(0.35f, 0.32f, 1.0f);

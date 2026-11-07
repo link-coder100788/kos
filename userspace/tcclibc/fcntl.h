@@ -2,8 +2,8 @@
 #define C_FCNTL_H
 
 // open(). KOS reads and writes whole files, so an open file is a copy in
-// memory: opening reads it all, and close() writes a changed file back.
-// Writes to a file that isn't closed are lost.
+// memory: opening reads it all, and it's written back once its last
+// descriptor is closed, or the program ends.
 
 #define O_RDONLY 0
 #define O_WRONLY 1

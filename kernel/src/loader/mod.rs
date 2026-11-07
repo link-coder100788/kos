@@ -17,6 +17,7 @@ use crate::filesys::fs_ipc::FsRequest;
 use crate::filesys::fs_ipc::FsResponse;
 use crate::filesys::fs_ipc::fs_call;
 use crate::println;
+use crate::fd::Fd;
 use crate::process::{self, Console, NewProcess, USER_BASE, HEAP_LIMIT};
 use crate::scheduler::TaskId;
 use crate::shell::fs::current_cwd;
@@ -27,6 +28,8 @@ struct Job {
     path: String,
     args: String,
     console: Console,
+    /// Its stdin, stdout and stderr, if not the console's.
+    stdio: Option<[Fd; 3]>,
 }
 
 static JOBS: IrqMutex<VecDeque<Job>> = IrqMutex::new(VecDeque::new());
@@ -34,7 +37,7 @@ static JOBS: IrqMutex<VecDeque<Job>> = IrqMutex::new(VecDeque::new());
 static FOREGROUND_PENDING: AtomicBool = AtomicBool::new(false);
 
 fn queue(path: String, args: String, console: Console) {
-    JOBS.lock().push_back(Job { path, args, console });
+    JOBS.lock().push_back(Job { path, args, console, stdio: None });
     // The loader task waits on the same queue as programs exiting.
     process::EXITED.wake_all();
 }
@@ -90,13 +93,14 @@ fn start(job: &Job) -> Result<TaskId, String> {
     log::debug!("{}: {} byte image", job.path, image.len());
     let name = job.path.rsplit('/').next().unwrap_or(&job.path);
     let name = name.trim_end_matches(".b64").trim_end_matches(".elf").trim_end_matches(".kbin");
-    start_image(name, &job.args, &image, job.path.ends_with(".kbin"), job.console)
+    start_image(name, &job.args, &image, job.path.ends_with(".kbin"), job.console, job.stdio.clone())
 }
 
 /// Loads and starts program `path` straight away (for a program's
-/// `spawn`), returning its task id.
-pub fn spawn(path: &str, args: &str, console: Console) -> Result<TaskId, String> {
-    start(&Job { path: String::from(path), args: String::from(args), console })
+/// `spawn`), returning its task id. `stdio` is its stdin, stdout and
+/// stderr; without it, it gets what `console` says.
+pub fn spawn(path: &str, args: &str, console: Console, stdio: Option<[Fd; 3]>) -> Result<TaskId, String> {
+    start(&Job { path: String::from(path), args: String::from(args), console, stdio })
 }
 
 /// Somewhere to load a program: the ELF and K loaders write through this.
@@ -109,10 +113,13 @@ pub trait ProgramMemory {
 }
 
 /// Starts a program from an ELF (or, if `kbin`, a K program) in memory.
-pub fn start_image(name: &str, args: &str, image: &[u8], kbin: bool, console: Console) -> Result<TaskId, String> {
+pub fn start_image(name: &str, args: &str, image: &[u8], kbin: bool, console: Console, stdio: Option<[Fd; 3]>) -> Result<TaskId, String> {
     use alloc::format;
     let mut new = NewProcess::new(name, console).ok_or("out of memory")?;
     new.set_args(args);
+    if let Some(stdio) = stdio {
+        new.set_stdio(stdio);
+    }
     let loaded = if kbin {
         crate::k::load::load_kbin(image, USER_BASE..HEAP_LIMIT, &mut new).map_err(|e| format!("bad K program: {:?}", e))
     } else {

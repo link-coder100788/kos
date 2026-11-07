@@ -13,7 +13,7 @@
 //     for (;;) {
 //         canvas_event_t e;
 //         while (canvas_poll(&c, &e) > 0)
-//             if (e.kind == CANVAS_CLOSED) { canvas_close(&c); exit(); }
+//             if (e.kind == CANVAS_CLOSED) { canvas_close(&c); exit(0); }
 //         canvas_clear(&c, rgb(0, 0, 40));
 //         canvas_text(&c, 10, 10, "Hello!", rgb(255, 255, 255), 2);
 //         canvas_present(&c);

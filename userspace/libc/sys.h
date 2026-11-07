@@ -4,7 +4,7 @@
 // The KOS C library: thin wrappers around the kernel's syscalls.
 //
 // Programs are freestanding (-ffreestanding -nostdlib), start at
-// `void _start(void)`, and must end with exit(). Build them by dropping a
+// `void _start(void)`, and must end with exit(status). Build them by dropping a
 // .c file in userspace/prog/ and running `make disk`; run them with
 // `run <name>.elf.b64` in the shell (which waits for them), `bg` (in the
 // background, without the console) or from the Programs window.
@@ -23,14 +23,14 @@
 // last_error() returns.
 //
 // Syscalls: `svc #n`, arguments in x0-x4, a sub-command in x16 for 4-7,
-// 12-13 and 15-16, the result in x0 (-1 for failure). The README's "Syscalls"
+// 12-13 and 15-17, the result in x0 (-1 for failure). The README's "Syscalls"
 // table has every sub-command and its arguments.
 //
 //   svc  what           libc
 //    0   exit           exit
-//    1   write a byte   write_byte
-//    2   write bytes    write_bytes, write, printf
-//    3   read a line    readln
+//    1   write a byte   write_byte (to stdout)
+//    2   write bytes    write_bytes, write, printf (to stdout)
+//    3   read a line    readln (from stdin)
 //    4   memory         alloc*, free, mem_free, mem_total, mem_size
 //    5   files          fs_write, fs_read, fs_list, fs_remove, fs_mkdir, fs_cwd
 //    6   windows        ui_*, canvas_*
@@ -44,6 +44,8 @@
 //   14   system info    uname
 //   15   crypto         sha256, sha512, hmac_sha256, aes_gcm_* (crypto.h)
 //   16   sound          snd, beep, play, play_file, snd_stop, snd_busy
+//   17   descriptors    fd_open, fd_read, fd_write, fd_close, fd_seek, fd_dup,
+//                       fd_dup2, fd_pipe, fd_isatty
 //
 // Each program runs in user mode in its own address space: it sees only
 // its own code, data, heap and stack (up to 8 MiB, growing as it's used), so a
@@ -55,8 +57,10 @@
 
 // ---- process -------------------------------------------------------------
 
-// Ends the program.
-__attribute__((noreturn)) void exit(void);
+// Ends the program with an exit status: 0 for success, anything else
+// (up to 255) for failure, as a shell's && and || see it. Its open files
+// are closed (and written back) first. Returning from _start is exit(0).
+__attribute__((noreturn)) void exit(int status);
 
 // Gives the rest of this time slice to other tasks.
 void yield(void);
@@ -86,17 +90,27 @@ const char* last_error(void);
 
 // ---- other programs --------------------------------------------------------
 // Programs are identified by their task id, as `ps` and the Task Manager
-// show it. A program started by another prints where its parent does, but
-// never gets keyboard input.
+// show it. A program started by another never gets keyboard input from
+// the console, but can be given a pipe or file to read (spawn_io).
 
 // Starts the program at `path` (an .elf, .elf.b64 or .kbin) with `args` as
-// its arguments (may be NULL). Returns its id, or -1.
+// its arguments (may be NULL). It gets this program's stdin, stdout and
+// stderr. Returns its id, or -1.
 long spawn(const char* path, const char* args);
 
-// Waits until program `id` has ended. Returns 0.
+// spawn, but the program's stdin, stdout and stderr are this program's
+// descriptors fds[0], fds[1] and fds[2] (-1 for the same as ours): e.g.
+// { -1, pipe_fds[1], -1 } to read what it prints from pipe_fds[0]. Close
+// our copy of the write end afterwards, or reading never ends.
+long spawn_io(const char* path, const char* args, const int fds[3]);
+
+// Waits until program `id` has ended, and returns its exit status: what it
+// passed to exit(), or 130 if Ctrl+C ended it, 137 if it was killed, 139
+// if it crashed. -1 if there's no such program. Once this returns, what it
+// wrote to files is on the disk.
 long proc_wait(long id);
 
-// spawn, then proc_wait. Returns 0, or -1 if it couldn't start.
+// spawn, then proc_wait: the exit status, or -1 if it couldn't start.
 long run_program(const char* path, const char* args);
 
 // Ends program `id`. Returns 0, or -1.
@@ -161,8 +175,9 @@ long random_bytes(void* buf, size_t len);
 uint64_t random_u64(void);
 
 // ---- console ---------------------------------------------------------------
-// Output goes to the serial console and the Terminal, except for programs
-// started with `bg`, whose output is thrown away.
+// These write to stdout, which is the serial console and the Terminal
+// unless whoever started the program gave it a pipe or a file (ksh does
+// for `|` and `>`). For programs started with `bg` it's thrown away.
 
 void write_byte(const uint8_t* byte);
 
@@ -174,10 +189,12 @@ void write(const char* str);
 // Writes a NUL-terminated string and a newline.
 void writeln(const char* str);
 
-// Waits for the next line typed on the console and copies up to max_len
-// bytes of it into buf, without the newline and without a terminating NUL.
-// Returns the number of bytes copied. Only programs started with `run` get
-// input; for any other, this returns 0 straight away.
+// Reads the next line from stdin and copies up to max_len bytes of it
+// into buf, without the newline and without a terminating NUL. Returns the
+// number of bytes copied, or -1 at the end of the input. On the console
+// (the usual stdin) that waits for a line to be typed, and only programs
+// started with `run` get input; for any other, this returns 0 straight
+// away. A pipe or file gives -1 once it has no more lines.
 long readln(char* buf, size_t max_len);
 
 // ---- memory ----------------------------------------------------------------
@@ -248,6 +265,67 @@ typedef struct {
 // Lists a folder (not "." or ".."). Returns an array of *count entries
 // (free() it when done), or NULL on error.
 fs_entry_t* fs_list(const char* path, int* count);
+
+// ---- file descriptors ----------------------------------------------------------
+// Numbered handles on files, pipes and the console, like Unix's. 0, 1 and
+// 2 are stdin, stdout and stderr; a program gets them from whoever started
+// it. KOS reads and writes whole files, so an open file is a copy in
+// memory: it's written back to the disk when its last descriptor is
+// closed, or when the program ends. Calls return -1 on error
+// (last_error() says why).
+
+#define STDIN_FD 0
+#define STDOUT_FD 1
+#define STDERR_FD 2
+
+// fd_open flags (Linux's values; combine one of the first three with |).
+#define FD_READ 0         // O_RDONLY
+#define FD_WRITE 1        // O_WRONLY
+#define FD_READ_WRITE 2   // O_RDWR
+#define FD_CREATE 0100    // O_CREAT: make it if it isn't there
+#define FD_EXCLUSIVE 0200 // O_EXCL: with FD_CREATE, fail if it is
+#define FD_TRUNCATE 01000 // O_TRUNC: empty it first
+#define FD_APPEND 02000   // O_APPEND: every write goes at the end
+
+// Opens `path` (relative to the shell's directory). Returns a descriptor.
+long fd_open(const char* path, int flags);
+
+// Reads up to max bytes. Returns how many (0 at the end of the input). A
+// pipe waits for something to read; the console waits for a line.
+long fd_read(long fd, void* buf, size_t max);
+
+// fd_read, but returns -2 at once if a pipe has nothing to read yet.
+long fd_read_now(long fd, void* buf, size_t max);
+
+// Writes len bytes; returns how many. A full pipe waits for room.
+long fd_write(long fd, const void* data, size_t len);
+
+// fd_write, but writes only what fits in a pipe now: -2 if nothing does.
+long fd_write_now(long fd, const void* data, size_t len);
+
+// Closes a descriptor. Returns 0, or -1 if writing the file back failed.
+long fd_close(long fd);
+
+// Moves a file's position (whence: 0 from the start, 1 from here, 2 from
+// the end). Returns the new position.
+long fd_seek(long fd, long offset, int whence);
+
+// Another descriptor for the same thing (and the same position).
+long fd_dup(long fd);
+
+// Makes descriptor `to` the same as `fd`, closing what `to` was. Returns to.
+long fd_dup2(long fd, long to);
+
+// A pipe: fds[1] writes, fds[0] reads it. Returns 0.
+long fd_pipe(int fds[2]);
+
+// 1 if fd is the console, else 0.
+int fd_isatty(long fd);
+
+// Reads everything from fd until the end of its input (e.g. stdin, when
+// it's a pipe), with a NUL after it. Returns it (free() it when done) and
+// its size in *len (len may be NULL), or NULL.
+char* fd_read_all(long fd, size_t* len);
 
 // ---- windows -----------------------------------------------------------------
 
