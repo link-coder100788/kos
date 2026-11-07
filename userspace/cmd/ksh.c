@@ -3,19 +3,23 @@
 //     ksh [script]
 //
 // Typed in the Terminal, it opens the Shell window and gives the Terminal
-// back. Builtins (cd, ls, cat, echo, alias, ...) print in the window;
-// programs in /bin run as usual and print where the Terminal does.
+// back. Builtins (cd, ls, cat, echo, alias, ...) and programs in /bin both
+// print in the window; while a program runs, lines typed go to its input
+// (Ctrl+D ends it, Ctrl+C ends the program).
 //
 // A line can chain commands with ; && || and end one in & to run it in the
-// background. $NAME, ${NAME} and $? expand, "double" quotes keep spaces
-// and still expand, 'single' quotes keep everything, \ escapes one
+// background. `a | b` feeds what a prints to b; `< file` reads input from
+// a file, `> file` and `>> file` write or add output to one, `2> file`
+// sends errors there and `2>&1` sends them with the output. $NAME, ${NAME}
+// and $? (the last command's exit status) expand, "double" quotes keep
+// spaces and still expand, 'single' quotes keep everything, \ escapes one
 // character, # starts a comment and * ? match file names. Up / Down go
 // through history, Tab completes commands and paths, Page Up / Page Down
 // scroll. /.kshrc runs at the start, and `source` runs any file of commands.
 //
 // ksh keeps its own current directory: relative paths given to programs
-// are made absolute first. There are no pipes or redirection yet, since
-// programs can't pass their output to anything but the console.
+// are made absolute first. Builtins don't read input, so `... | cat` shows
+// nothing; programs (grep, wc...) do.
 
 #include "../libc/sys.h"
 #include "../libc/stdio.h"
@@ -110,7 +114,29 @@ static void new_line(void) {
     line_count++;
 }
 
+// While a builtin's output goes to a pipe or a file, what it prints is
+// collected here instead of shown. (fail()'s errors still show.)
+static int capturing;
+static char* captured;
+static size_t captured_len, captured_cap;
+
+static void capture_char(char c) {
+    if (captured_len == captured_cap) {
+        size_t cap = captured_cap ? captured_cap * 2 : 4096;
+        char* bigger = realloc(captured, cap);
+        if (!bigger) return;
+        captured = bigger;
+        captured_cap = cap;
+    }
+    captured[captured_len++] = c;
+}
+
 static void put_char(char c, int fg, int bg) {
+    if (capturing) {
+        capture_char(c);
+        return;
+    }
+    if (c == '\r') return;
     if (c == '\n') {
         new_line();
         return;
@@ -151,6 +177,10 @@ static void print(int fg, const char* format, ...) {
 
 // Starts a fresh line unless the open one is empty.
 static void end_line(void) {
+    if (capturing) {
+        if (captured_len && captured[captured_len - 1] != '\n') capture_char('\n');
+        return;
+    }
     if (open_line()->len) new_line();
 }
 
@@ -162,10 +192,13 @@ static int fail(const char* format, ...) {
     va_start(args, format);
     vsnprintf(buf, sizeof buf, format, args);
     va_end(args);
+    int was_capturing = capturing;
+    capturing = 0;
     end_line();
     put("ksh: ", C_ERR);
     put(buf, C_ERR);
     put("\n", C_ERR);
+    capturing = was_capturing;
     return 1;
 }
 
@@ -181,6 +214,7 @@ static canvas_t win;
 static char cwd[256] = "/";
 static char old_cwd[256] = "/";
 static int status = 0;      // $?: the last command's, 0 for success
+static int prompting;       // waiting for a line (see read_line)
 
 #define MAX_VARS 64
 typedef struct {
@@ -200,8 +234,11 @@ static alias_t aliases[MAX_ALIASES];
 static int alias_count;
 
 #define MAX_JOBS 16
+#define MAX_STAGES 8
 typedef struct {
-    long id;
+    long ids[MAX_STAGES];   // its programs, one per stage of its pipeline
+    int count;
+    long out;               // what they print, to show
     int number;
     char name[32];
 } job_t;
@@ -420,6 +457,13 @@ static int lex(const char** pp, tokens_t* ts, int one) {
             return 0;
         }
         char c = *p;
+        // 2> 2>> 2>&1: where errors go.
+        if (c == '2' && p[1] == '>') {
+            const char* op = p[2] == '&' && p[3] == '1' ? "2>&1" : p[2] == '>' ? "2>>" : "2>";
+            if (add_token(ts, T_REDIR, op, 0, 0, 0)) return 1;
+            p += strlen(op);
+            continue;
+        }
         if (strchr(";&|<>", c)) {
             int two = p[1] == c && c != ';' && c != '<';
             static const struct { char c; int two; kind_t kind; const char* text; } ops[] = {
@@ -432,7 +476,8 @@ static int lex(const char** pp, tokens_t* ts, int one) {
                 if (add_token(ts, ops[i].kind, ops[i].text, 0, 0, 0)) return 1;
             }
             p += two ? 2 : 1;
-            if (one) {
+            // A pipeline and its redirections are one command.
+            if (one && !(c == '|' && !two) && c != '<' && c != '>') {
                 *pp = p;
                 return 0;
             }
@@ -493,6 +538,11 @@ static int expand_aliases(tokens_t* ts) {
     int at_start = 1;
     for (int i = 0; i < ts->n; i++) {
         token_t* t = &ts->t[i];
+        if (t->kind == T_REDIR) {
+            // The file name after it isn't a command.
+            if (strcmp(t->text, "2>&1")) i++;
+            continue;
+        }
         if (t->kind != T_WORD) {
             at_start = 1;
             used_count = 0;
@@ -604,19 +654,49 @@ static int add_glob(args_t* a, const char* word) {
 
 // ---- jobs ------------------------------------------------------------------------
 
-// Reports background jobs that have ended, and forgets them.
+// Shows what's waiting in pipe `fd`: 1 if there was something, 0 if not
+// yet, -1 once it's over (every program writing to it has ended).
+static int show_output(long fd) {
+    char buf[1024];
+    int shown = 0;
+    for (;;) {
+        long n = fd_read_now(fd, buf, sizeof buf);
+        if (n == -2) return shown;
+        if (n <= 0) return -1;
+        for (long i = 0; i < n; i++) put_char(buf[i], C_TEXT, C_NONE);
+        shown = 1;
+    }
+}
+
+static int any_running(const long* ids, int count) {
+    for (int i = 0; i < count; i++)
+        if (ids[i] >= 0 && proc_running(ids[i])) return 1;
+    return 0;
+}
+
+// Shows background jobs' output, and reports the ones that have ended
+// and forgets them. Returns whether anything was shown.
 static int check_jobs(void) {
     int changed = 0;
     for (int i = 0; i < job_count;) {
-        if (proc_running(jobs[i].id)) {
+        job_t* j = &jobs[i];
+        int out = j->out >= 0 ? show_output(j->out) : -1;
+        if (out > 0) changed = 1;
+        if (out >= 0 || any_running(j->ids, j->count)) {
             i++;
             continue;
         }
+        if (j->out >= 0) fd_close(j->out);
+        long last = j->ids[j->count - 1];
+        long code = last >= 0 ? proc_wait(last) : 127;
         end_line();
-        print(C_DIM, "[%d] done  %s\n", jobs[i].number, jobs[i].name);
+        if (code) print(C_DIM, "[%d] done  %s  (exit %ld)\n", j->number, j->name, code);
+        else print(C_DIM, "[%d] done  %s\n", j->number, j->name);
         jobs[i] = jobs[--job_count];
         changed = 1;
     }
+    // Output that came in while ksh waits at the prompt goes above it.
+    if (changed && prompting) end_line();
     if (job_count == 0) next_job = 1;
     return changed;
 }
@@ -790,7 +870,7 @@ static int run_file(const char* path);
 
 static __attribute__((noreturn)) void quit(void) {
     canvas_close(&win);
-    exit();
+    exit(0);
 }
 
 // Commands only the kernel shell (the Terminal) has.
@@ -819,17 +899,12 @@ static int find_program(const char* name, char* out, size_t size) {
     return is_file(out) ? 0 : -1;
 }
 
-static int start_program(args_t* a, int background) {
-    char path[256];
-    if (find_program(a->v[0], path, sizeof path)) {
-        if (is_kernel_command(a->v[0]))
-            return fail("%s: that's a kernel shell command; run it in the Terminal", a->v[0]);
-        return fail("%s: command not found", a->v[0]);
-    }
-    // Programs get their arguments as one string split at spaces, and
-    // look up relative paths from the Terminal's directory, not ours.
-    char args[1024] = "";
+// The arguments after a program's name as the one string programs get,
+// split at spaces. Programs look up relative paths from the Terminal's
+// directory, not ours, so paths that exist are made absolute.
+static int program_args(const args_t* a, char* out, size_t size) {
     size_t len = 0;
+    out[0] = '\0';
     for (int i = 1; i < a->n; i++) {
         const char* arg = a->v[i];
         if (strchr(arg, ' ')) return fail("%s: arguments with spaces can't be passed to programs yet", a->v[0]);
@@ -838,30 +913,10 @@ static int start_program(args_t* a, int background) {
             abs_path(arg, full, sizeof full);
             if (is_file(full) || is_dir(full)) arg = full;
         }
-        int n = snprintf(args + len, sizeof args - len, "%s%s", len ? " " : "", arg);
-        if (n < 0 || len + n >= sizeof args) return fail("%s: arguments are too long", a->v[0]);
+        int n = snprintf(out + len, size - len, "%s%s", len ? " " : "", arg);
+        if (n < 0 || len + n >= size) return fail("%s: arguments are too long", a->v[0]);
         len += n;
     }
-
-    long id = spawn(path, args);
-    if (id < 0) return fail("%s: %s", a->v[0], last_error());
-    const char* base = strrchr(a->v[0], '/') ? strrchr(a->v[0], '/') + 1 : a->v[0];
-    if (background) {
-        if (job_count == MAX_JOBS) {
-            print(C_WARN, "ksh: too many jobs to track; %s runs untracked\n", base);
-            return 0;
-        }
-        job_t* j = &jobs[job_count++];
-        j->id = id;
-        j->number = next_job++;
-        snprintf(j->name, sizeof j->name, "%s", base);
-        print(C_DIM, "[%d] %ld  %s\n", j->number, id, base);
-        return 0;
-    }
-    end_line();
-    print(C_DIM, "  %s is running; its output is in the Terminal\n", base);
-    render();
-    proc_wait(id);
     return 0;
 }
 
@@ -934,6 +989,9 @@ static int b_ls(int argc, char** argv) {
                 print_entry(&entries[k], 0);
                 put("\n", C_TEXT);
             }
+        } else if (shown && capturing) {
+            // One a line, for grep and the like.
+            for (int k = 0; k < shown; k++) print(C_TEXT, "%s%s\n", entries[k].name, entries[k].is_dir ? "/" : "");
         } else if (shown) {
             width += 2;
             int columns = COLS / width;
@@ -1146,7 +1204,7 @@ static int b_exit(int argc, char** argv) {
 
 static int b_jobs(int argc, char** argv) {
     check_jobs();
-    for (int i = 0; i < job_count; i++) print(C_TEXT, "[%d] %ld  %s\n", jobs[i].number, jobs[i].id, jobs[i].name);
+    for (int i = 0; i < job_count; i++) print(C_TEXT, "[%d] %ld  %s\n", jobs[i].number, jobs[i].ids[jobs[i].count - 1], jobs[i].name);
     return 0;
 }
 
@@ -1157,12 +1215,18 @@ static int b_kill(int argc, char** argv) {
         long id = -1;
         if (argv[i][0] == '%') {
             int number = atoi(argv[i] + 1);
+            job_t* job = NULL;
             for (int k = 0; k < job_count; k++)
-                if (jobs[k].number == number) id = jobs[k].id;
-            if (id < 0) {
+                if (jobs[k].number == number) job = &jobs[k];
+            if (!job) {
                 result = fail("kill: %s: no such job", argv[i]);
                 continue;
             }
+            // Every program in its pipeline.
+            for (int k = 0; k < job->count; k++)
+                if (job->ids[k] >= 0 && proc_running(job->ids[k]) && proc_kill(job->ids[k]) < 0)
+                    result = fail("kill: %s: %s", argv[i], last_error());
+            continue;
         } else {
             char* end;
             id = strtol(argv[i], &end, 10);
@@ -1242,43 +1306,355 @@ static int b_help(int argc, char** argv) {
         if (builtins[i].help) print(C_TEXT, "  %s\n", builtins[i].help);
     put("Programs\n", C_ACCENT);
     put("  Anything in /bin by name (grep, wc, curl...), or a program by path.\n"
-        "  They print in the Terminal. Add & to run one in the background.\n", C_TEXT);
+        "  They print here, and get the lines typed while they run (Ctrl+D ends\n"
+        "  the input, Ctrl+C the program). Add & to run one in the background.\n", C_TEXT);
     put("Lines\n", C_ACCENT);
     put("  a ; b   a && b   a || b   prog &   NAME=value   $NAME ${NAME} $?\n"
+        "  a | b   < in   > out   >> out   2> errors   2>&1\n"
         "  \"double\" and 'single' quotes, \\ escapes, * ? globs, # comments\n", C_TEXT);
     put("Keys\n", C_ACCENT);
     put("  Up/Down history, Tab completes, PgUp/PgDn scroll, Esc clears the line\n", C_TEXT);
-    put("Not yet: pipes (|) and redirection (> >> <)\n", C_DIM);
     return 0;
 }
 
 // ---- executing lines -----------------------------------------------------------
 
-static int run_command(token_t* words, int n, int background) {
-    // Leading NAME=value words set variables.
+// One command of a pipeline: its words, and where its input and output go
+// (-1: the pipeline's usual).
+typedef struct {
+    args_t args;
+    builtin_fn builtin;
+    char path[256];         // the program, if it isn't a builtin
+    long in, out, err;      // descriptors from < > >> 2> 2>>
+    int err_to_out;         // 2>&1
+} stage_t;
+
+static void close_fd(long* fd) {
+    if (*fd >= 0) fd_close(*fd);
+    *fd = -1;
+}
+
+// Opens a redirection's file for stage `st`. Returns 0, or 1 after
+// saying why not.
+static int redirect(stage_t* st, const char* op, const char* name) {
+    char path[256];
+    abs_path(name, path, sizeof path);
+    int to_err = op[0] == '2';
+    int append = !strcmp(op + to_err, ">>");
+    int flags = op[0] == '<' ? FD_READ : FD_WRITE | FD_CREATE | (append ? FD_APPEND : FD_TRUNCATE);
+    long* fd = op[0] == '<' ? &st->in : to_err ? &st->err : &st->out;
+    close_fd(fd);
+    if (is_dir(path)) return fail("%s: is a folder", name);
+    *fd = fd_open(path, flags);
+    if (*fd < 0) return fail("%s: %s", name, op[0] == '<' && !is_file(path) ? "no such file" : last_error());
+    return 0;
+}
+
+// Turns a command's words into its arguments and redirections. Leading
+// NAME=value words set variables. Returns 0, or 1 after saying why not.
+static int parse_stage(token_t* words, int n, stage_t* st) {
     int i = 0;
-    while (i < n && words[i].assign) i++;
+    while (i < n && words[i].kind == T_WORD && words[i].assign) i++;
     for (int k = 0; k < i; k++) {
         char* text = words[k].text;
         text[words[k].assign - 1] = '\0';
         set_var(text, text + words[k].assign);
     }
-    if (i == n) return 0;
+    for (; i < n; i++) {
+        token_t* t = &words[i];
+        if (t->kind == T_REDIR) {
+            if (!strcmp(t->text, "2>&1")) {
+                st->err_to_out = 1;
+                continue;
+            }
+            if (i + 1 == n || words[i + 1].kind != T_WORD) return fail("syntax error: '%s' needs a file name", t->text);
+            if (redirect(st, t->text, words[++i].text)) return 1;
+            continue;
+        }
+        if (t->glob ? add_glob(&st->args, t->text) : add_arg(&st->args, t->text)) return 1;
+    }
+    return 0;
+}
 
-    args_t a = { .n = 0 };
-    int err = 0;
-    for (; i < n && !err; i++) err = words[i].glob ? add_glob(&a, words[i].text) : add_arg(&a, words[i].text);
-    if (err) {
-        free_args(&a);
+// Runs a builtin with its output collected (see `capturing`). Returns its
+// status; the output is in captured[0..captured_len].
+static int run_captured(builtin_fn fn, args_t* a) {
+    captured_len = 0;
+    capturing = 1;
+    int result = fn(a->n, a->v);
+    capturing = 0;
+    return result;
+}
+
+// Writes all of `data` to file descriptor `fd` (a file, so it doesn't
+// wait), and says if that failed.
+static int write_all(long fd, const char* data, size_t len, const char* what) {
+    while (len) {
+        long n = fd_write(fd, data, len);
+        if (n <= 0) return fail("%s: %s", what, last_error());
+        data += n;
+        len -= n;
+    }
+    return 0;
+}
+
+// A line typed while a program runs, for its input.
+static char typed[512];
+static int typed_len;
+
+// Handles a key typed while a pipeline runs: it goes to the input pipe
+// `*in` a line at a time (Ctrl+D closes it). Ctrl+C ends the pipeline's
+// programs. Returns 1 if something changed on screen.
+static int running_key(int key, long* in, const long* ids, int count) {
+    if (key == 3) {
+        put("^C\n", C_DIM);
+        for (int i = 0; i < count; i++)
+            if (ids[i] >= 0) proc_kill(ids[i]);
         return 1;
     }
-    int result;
-    builtin_fn fn = find_builtin(a.v[0]);
-    if (fn && background) result = fail("%s: builtins can't run in the background", a.v[0]);
-    else if (fn) result = fn(a.n, a.v);
-    else result = start_program(&a, background);
-    free_args(&a);
-    return result;
+    if (key == CANVAS_KEY_PAGE_UP) {
+        scroll += ROWS - 2;
+        return 1;
+    }
+    if (key == CANVAS_KEY_PAGE_DOWN) {
+        scroll = scroll > ROWS - 2 ? scroll - (ROWS - 2) : 0;
+        return 1;
+    }
+    if (*in < 0) return 0;
+    scroll = 0;
+    if (key == 4) {
+        close_fd(in);
+        return 0;
+    }
+    if (key == '\n') {
+        typed[typed_len++] = '\n';
+        put_char('\n', C_TEXT, C_NONE);
+        // A program that has stopped reading just doesn't get it.
+        fd_write_now(*in, typed, typed_len);
+        typed_len = 0;
+        return 1;
+    }
+    if (key == 8 && typed_len > 0) {
+        typed_len--;
+        if (open_line()->len) open_line()->len--;
+        return 1;
+    }
+    if (key >= 32 && key < 127 && typed_len < (int)sizeof typed - 1) {
+        typed[typed_len++] = (char)key;
+        put_char((char)key, C_ACCENT, C_NONE);
+        return 1;
+    }
+    return 0;
+}
+
+// Runs a pipeline: the commands in `words` (n tokens) joined by |, each
+// with its redirections. Programs print into the window (through a pipe
+// ksh reads), get typed lines as input, and run together; a builtin runs
+// in ksh first, with its output collected and fed on. Returns the last
+// command's exit status.
+static int run_pipeline(token_t* words, int n, int background) {
+    stage_t st[MAX_STAGES];
+    int count = 0, result = 0;
+    int start = 0;
+    for (int i = 0; i <= n && !result; i++) {
+        if (i < n && words[i].kind != T_PIPE) continue;
+        if (count == MAX_STAGES) {
+            result = fail("too many commands in one pipeline (at most %d)", MAX_STAGES);
+            break;
+        }
+        stage_t* s = &st[count++];
+        memset(s, 0, sizeof *s);
+        s->in = s->out = s->err = -1;
+        if (i == start) {
+            result = fail("syntax error near '|'");
+            break;
+        }
+        result = parse_stage(&words[start], i - start, s);
+        start = i + 1;
+    }
+    // Only NAME=value: nothing to run.
+    if (!result && count == 1 && st[0].args.n == 0 && st[0].in < 0 && st[0].out < 0 && st[0].err < 0) {
+        free_args(&st[0].args);
+        return 0;
+    }
+    for (int i = 0; i < count && !result; i++) {
+        stage_t* s = &st[i];
+        if (s->args.n == 0) {
+            result = fail("syntax error: a redirection without a command");
+        } else if ((s->builtin = find_builtin(s->args.v[0]))) {
+            if (background) result = fail("%s: builtins can't run in the background", s->args.v[0]);
+        } else if (find_program(s->args.v[0], s->path, sizeof s->path)) {
+            if (is_kernel_command(s->args.v[0]))
+                fail("%s: that's a kernel shell command; run it in the Terminal", s->args.v[0]);
+            else
+                fail("%s: command not found", s->args.v[0]);
+            result = 127;
+        }
+    }
+    if (result) {
+        for (int i = 0; i < count; i++) {
+            close_fd(&st[i].in);
+            close_fd(&st[i].out);
+            close_fd(&st[i].err);
+            free_args(&st[i].args);
+        }
+        return result;
+    }
+
+    // A lone builtin printing to the window, as it always did.
+    if (count == 1 && st[0].builtin && st[0].out < 0) {
+        close_fd(&st[0].in);
+        close_fd(&st[0].err);
+        result = st[0].builtin(st[0].args.n, st[0].args.v);
+        free_args(&st[0].args);
+        return result;
+    }
+
+    // pipes[i] joins stage i to i + 1; `shown` carries what the programs
+    // print to the window, and `input` what's typed to the first one.
+    int pipes[MAX_STAGES][2];
+    int shown[2] = { -1, -1 }, input[2] = { -1, -1 };
+    int made = 0;
+    for (; made < count - 1; made++)
+        if (fd_pipe(pipes[made]) < 0) break;
+    int ok = made == count - 1 && fd_pipe(shown) == 0 && fd_pipe(input) == 0;
+
+    long ids[MAX_STAGES];
+    int statuses[MAX_STAGES];
+    // What a builtin in the middle of the pipeline printed, still to feed
+    // to the next command.
+    char* feed = NULL;
+    size_t feed_len = 0, fed = 0;
+    long feed_fd = -1;
+    for (int i = 0; i < count; i++) {
+        ids[i] = -1;
+        statuses[i] = 0;
+        if (!ok) continue;
+        stage_t* s = &st[i];
+        long out = s->out >= 0 ? s->out : i == count - 1 ? shown[1] : pipes[i][1];
+        if (s->builtin && i == count - 1 && s->out < 0) {
+            statuses[i] = s->builtin(s->args.n, s->args.v);
+        } else if (s->builtin) {
+            statuses[i] = run_captured(s->builtin, &s->args);
+            if (s->out >= 0) {
+                if (write_all(out, captured, captured_len, s->args.v[0])) statuses[i] = 1;
+            } else if (captured_len) {
+                free(feed);
+                feed = malloc(captured_len);
+                if (feed) memcpy(feed, captured, captured_len);
+                feed_len = feed ? captured_len : 0;
+                fed = 0;
+                feed_fd = pipes[i][1];
+                pipes[i][1] = -1;
+            }
+            continue;
+        }
+        char args[1024];
+        if (program_args(&s->args, args, sizeof args)) {
+            statuses[i] = 1;
+            continue;
+        }
+        int fds[3];
+        fds[0] = s->in >= 0 ? s->in : i == 0 ? input[0] : pipes[i - 1][0];
+        fds[1] = out;
+        fds[2] = s->err_to_out ? out : s->err >= 0 ? s->err : shown[1];
+        ids[i] = spawn_io(s->path, args, fds);
+        if (ids[i] < 0) {
+            fail("%s: %s", s->args.v[0], last_error());
+            statuses[i] = 126;
+        }
+    }
+    if (!ok) fail("couldn't make pipes: %s", last_error());
+    char name[32];
+    const char* first = st[0].args.v[0];
+    snprintf(name, sizeof name, "%s%s", strrchr(first, '/') ? strrchr(first, '/') + 1 : first, count > 1 ? " | ..." : "");
+    int input_redirected = st[0].in >= 0;
+
+    // Only the programs hold their ends now (a builtin's stdin goes
+    // unread, so whatever writes to it stops). Background jobs get no
+    // input.
+    for (int i = 0; i < count; i++) {
+        close_fd(&st[i].in);
+        close_fd(&st[i].out);
+        close_fd(&st[i].err);
+        free_args(&st[i].args);
+    }
+    for (int i = 0; i < made; i++) {
+        long r = pipes[i][0], w = pipes[i][1];
+        close_fd(&r);
+        if (w >= 0) close_fd(&w);
+    }
+    long show_fd = shown[0], in_fd = input[1], unused;
+    unused = shown[1];
+    close_fd(&unused);
+    unused = input[0];
+    close_fd(&unused);
+    if (background || input_redirected) close_fd(&in_fd);
+    if (!ok) {
+        close_fd(&show_fd);
+        close_fd(&in_fd);
+        free(feed);
+        return 1;
+    }
+
+    if (background) {
+        if (job_count == MAX_JOBS) {
+            print(C_WARN, "ksh: too many jobs to track; %s runs untracked\n", name);
+            close_fd(&show_fd);
+            return 0;
+        }
+        job_t* j = &jobs[job_count++];
+        memcpy(j->ids, ids, sizeof ids);
+        j->count = count;
+        j->out = show_fd;
+        j->number = next_job++;
+        snprintf(j->name, sizeof j->name, "%s", name);
+        print(C_DIM, "[%d] %ld  %s\n", j->number, ids[count - 1], j->name);
+        return 0;
+    }
+
+    // Show what they print and pass on what's typed until every program
+    // has ended and the output is all shown.
+    typed_len = 0;
+    int out_done = show_fd < 0;
+    uint64_t jobs_at = 0;
+    for (;;) {
+        int busy = 0;
+        if (!out_done) {
+            int got = show_output(show_fd);
+            if (got < 0) out_done = 1;
+            busy |= got != 0;
+        }
+        if (feed_fd >= 0) {
+            long w = fd_write_now(feed_fd, feed + fed, feed_len - fed);
+            if (w > 0) fed += w;
+            if (w == -1 || fed == feed_len) close_fd(&feed_fd);
+            busy |= w > 0;
+        }
+        canvas_event_t e;
+        while (canvas_poll(&win, &e) > 0) {
+            if (e.kind == CANVAS_CLOSED) {
+                for (int i = 0; i < count; i++)
+                    if (ids[i] >= 0) proc_kill(ids[i]);
+                quit();
+            }
+            if (e.kind == CANVAS_KEY) busy |= running_key(e.key, &in_fd, ids, count);
+        }
+        uint64_t now = uptime_ms();
+        if (now - jobs_at >= 500) {
+            jobs_at = now;
+            if (job_count) busy |= check_jobs();
+        }
+        if (out_done && feed_fd < 0 && !any_running(ids, count)) break;
+        if (busy) render();
+        else sleep_ms(10);
+    }
+    close_fd(&show_fd);
+    close_fd(&in_fd);
+    free(feed);
+    for (int i = 0; i < count; i++)
+        if (ids[i] >= 0) statuses[i] = (int)proc_wait(ids[i]);
+    return statuses[count - 1];
 }
 
 static const char* op_name(kind_t kind) {
@@ -1294,16 +1670,10 @@ static const char* op_name(kind_t kind) {
 static int run_line(const char* line) {
     tokens_t* ts = malloc(sizeof *ts);
     if (!ts) return status = fail("out of memory");
-    // Look over the whole line first: a missing quote or a pipe anywhere
-    // stops it before any of it runs.
+    // Look over the whole line first: a missing quote anywhere stops it
+    // before any of it runs.
     const char* p = line;
     int bad = lex(&p, ts, 0);
-    for (int i = 0; !bad && i < ts->n; i++) {
-        if (ts->t[i].kind == T_PIPE || ts->t[i].kind == T_REDIR) {
-            fail("'%s': pipes and redirection aren't supported yet (programs can only print to the console)", ts->t[i].text);
-            bad = 1;
-        }
-    }
     free_tokens(ts);
     if (bad) {
         free(ts);
@@ -1318,11 +1688,11 @@ static int run_line(const char* line) {
             status = 1;
             break;
         }
-        // One command and the operator after it (an alias can make more).
+        // One pipeline and the operator after it (an alias can make more).
         int i = 0, error = 0;
         while (i < ts->n) {
             int start = i;
-            while (i < ts->n && ts->t[i].kind == T_WORD) i++;
+            while (i < ts->n && (ts->t[i].kind == T_WORD || ts->t[i].kind == T_PIPE || ts->t[i].kind == T_REDIR)) i++;
             int end = i;
             kind_t op = i < ts->n ? ts->t[i].kind : T_SEMI;
             if (i < ts->n) i++;
@@ -1332,7 +1702,7 @@ static int run_line(const char* line) {
                 break;
             }
             int skip = (joined_by == T_AND && status != 0) || (joined_by == T_OR && status == 0);
-            if (!skip) status = run_command(&ts->t[start], end - start, op == T_BG);
+            if (!skip) status = run_pipeline(&ts->t[start], end - start, op == T_BG);
             joined_by = op;
         }
         free_tokens(ts);
@@ -1614,7 +1984,7 @@ static void banner(void) {
 static __attribute__((noreturn)) void shell(int argc, char** argv) {
     if (canvas_open(&win, "Shell", WIN_W, WIN_H) < 0) {
         printf("ksh: couldn't open a window\n");
-        exit();
+        exit(0);
     }
     char start[256];
     if (fs_cwd(start, sizeof start) > 0) abs_path(start, cwd, sizeof cwd);
@@ -1651,5 +2021,5 @@ void _start(void) {
         strncat(args, argv[i], sizeof args - strlen(args) - 1);
     }
     if (spawn(SELF, args) < 0) printf("ksh: couldn't start: %s\n", last_error());
-    exit();
+    exit(0);
 }
