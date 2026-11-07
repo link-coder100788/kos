@@ -5,7 +5,7 @@
 //!
 //! The model is loaded the first time it's needed and kept from then on.
 
-mod tools;
+pub mod tools;
 
 use alloc::format;
 use alloc::string::String;

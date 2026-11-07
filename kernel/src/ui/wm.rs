@@ -43,12 +43,13 @@ const TITLE_FOCUSED: (u32, u32) = (rgb(0x4a, 0x84, 0xc4), rgb(0x2c, 0x5a, 0x92))
 const TITLE_UNFOCUSED: (u32, u32) = (rgb(0x7a, 0x7f, 0x8a), rgb(0x5c, 0x61, 0x6b));
 
 /// Entries in the KOS menu.
-const MENU: [(&str, fn() -> Box<dyn App>); 6] = [
+const MENU: [(&str, fn() -> Box<dyn App>); 7] = [
     ("Terminal", || Box::new(apps::terminal::Terminal::new())),
     ("Browser", || Box::new(apps::browser::Browser::new())),
     ("Programs", || Box::new(apps::programs::Programs::new())),
     ("Task Manager", || Box::new(apps::taskmgr::TaskManager::new())),
     ("Paint", || Box::new(apps::paint::Paint::new())),
+    ("K-AI", || Box::new(apps::kai::KAI::new())),
     ("About KOS", || Box::new(apps::about::About::new())),
 ];
 
