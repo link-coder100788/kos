@@ -9,7 +9,6 @@ void _start(void) {
     utsname_t info;
     if (uname(&info) < 0) { writeln("uname: failed"); exit(1); }
     if (argc > 1) { writeln("uname: too many args"); exit(2); }
-
     char flag = argc == 0 ? 's' : (argv[0][0] == '-' ? argv[0][1] : 0);
     switch (flag) {
         case 's': printf("%s\n", info.sysname); break;
