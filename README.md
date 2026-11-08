@@ -466,4 +466,5 @@ userspace/
 disk/                  files that go on disk.img
 tools/mkdisk/          host tool that builds disk.img (and puts files into an existing one)
 tools/assistant/       K-AI's training: intents, data generator, model, tests, export
+tools/qemu/            QEMU 11.1.1, vendored (minus roms/), for KOS's own GPU device later
 ```

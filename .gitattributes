@@ -1,2 +1,3 @@
 *.k linguist-vendored
 tools/tinycc/** linguist-vendored
+tools/qemu/** linguist-vendored

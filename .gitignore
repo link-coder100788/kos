@@ -12,3 +12,5 @@ disk/images/
 disk/files/files2/
 # Python bytecode
 __pycache__/
+# vendored QEMU firmware images (tools/qemu/pc-bios)
+!tools/qemu/**/*.img
