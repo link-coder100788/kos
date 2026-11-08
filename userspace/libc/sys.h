@@ -23,7 +23,7 @@
 // last_error() returns.
 //
 // Syscalls: `svc #n`, arguments in x0-x4, a sub-command in x16 for 4-7,
-// 12-13 and 15-17, the result in x0 (-1 for failure). The README's "Syscalls"
+// 12-13 and 15-18, the result in x0 (-1 for failure). The README's "Syscalls"
 // table has every sub-command and its arguments.
 //
 //   svc  what           libc
@@ -46,6 +46,7 @@
 //   16   sound          snd, beep, play, play_file, snd_stop, snd_busy
 //   17   descriptors    fd_open, fd_read, fd_write, fd_close, fd_seek, fd_dup,
 //                       fd_dup2, fd_pipe, fd_isatty
+//   18   GPU            kgl_* and gl* (gl.h)
 //
 // Each program runs in user mode in its own address space: it sees only
 // its own code, data, heap and stack (up to 8 MiB, growing as it's used), so a

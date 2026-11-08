@@ -46,6 +46,8 @@ kos_syscall:
     beq 16f
     subs xzr, x6, #17
     beq 17f
+    subs xzr, x6, #18
+    beq 18f
     movn x0, #0      // x0 = -1: no such syscall
     ret
 0:  SVC(0)
@@ -83,4 +85,6 @@ kos_syscall:
 16:  SVC(16)
     ret
 17:  SVC(17)
+    ret
+18:  SVC(18)
     ret

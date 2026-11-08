@@ -133,6 +133,11 @@ fn input_devices() {
 }
 
 #[initcall(level = InitLevel::middle, priority = 5)]
+fn gl_device() {
+    crate::drivers::virtio::kgl::init();
+}
+
+#[initcall(level = InitLevel::middle, priority = 5)]
 fn sound() {
     crate::sound::init();
 }

@@ -24,9 +24,11 @@ On Linux, install `qemu-system-aarch64` (often in a `qemu-system-arm` package), 
 
 **Quitting:** close the QEMU window, or press `Ctrl-A` then `X` in the terminal.
 
+**KOS's own QEMU:** `make qemu` builds the QEMU vendored in `tools/qemu`, which adds a device that lets programs draw with the Mac's GPU, in OpenGL with HLSL shaders (see [3D on the GPU](#3d-on-the-gpu)). It needs `brew install ninja cmake` too, and takes a few minutes the first time. Once it's built, `make run-gui` uses it.
+
 ### As a Mac app
 
-`make package` builds `build/KOS.app`: KOS, a fresh disk and QEMU in one app you can double-click, or copy to `/Applications` (or to another Apple silicon Mac, which then needs neither Homebrew nor QEMU). QEMU comes with every library it needs that macOS doesn't have, all signed ad hoc; `QEMU_BIN=...` picks a QEMU other than the one on your `PATH`. `tools/package_app.py` does the work, and `tools/make_icon.py` draws the icon ("KOS" in the system's pixel font on the desktop's colors; `--png icon.png` writes just the picture).
+`make package` builds `build/KOS.app`: KOS, a fresh disk and KOS's own QEMU (built first if need be, with `kos-hlslc` for HLSL shaders) in one app you can double-click, or copy to `/Applications` (or to another Apple silicon Mac, which then needs neither Homebrew nor QEMU). QEMU comes with every library it needs that macOS doesn't have, all signed ad hoc; `QEMU_BIN=...` packages another QEMU instead (without the GPU device). `tools/package_app.py` does the work, and `tools/make_icon.py` draws the icon ("KOS" in the system's pixel font on the desktop's colors; `--png icon.png` writes just the picture).
 
 The app keeps its disk and settings in `~/Library/Application Support/KOS/`, so what you do in KOS survives rebuilding the app. When a rebuilt app brings a newer disk (new programs), it asks before replacing yours, and keeps the old one as `disk.img.old`. `kos.conf` there holds the settings, read at each start: `ACCEL`, `SMP`, `MEM`, `DISPLAY_DEV`, `LOG`, `FULL_SCREEN=1`, and `FWD`, which by default forwards `localhost:2222` to KOS's port 22 for `sshd`. The serial console is in QEMU's View menu, and QEMU's own messages go to `qemu.log` there. Opening the app while KOS is running only says so, since both would need the same disk.
 
@@ -35,6 +37,7 @@ The app keeps its disk and settings in `~/Library/Application Support/KOS/`, so 
 ```sh
 make run-gui    # the desktop in a QEMU window, plus the serial console in this terminal
 make run        # serial console only, no display
+make qemu       # build KOS's own QEMU (with GPU drawing for gl.h) into build/qemu/
 make test       # run the in-kernel test suite; exits 0 if every test passed
 make disk       # rebuild disk.img from scratch (discards changes made from inside KOS)
 make user       # just build the userspace programs into build/user/
@@ -55,6 +58,7 @@ Options are passed as make variables:
 | `LOG`      | (empty)           | Log levels at boot, e.g. `LOG=debug` or `LOG="net=trace,console=debug"`. See [Logging](#logging-and-debugging). |
 | `FEATURES` | (empty)           | Kernel cargo features: `test` (in-kernel test suite), `restart_secondary` (restart a core that panics). |
 | `DISK`     | `disk.img`        | Disk image to attach.                                                    |
+| `QEMU_BIN` | `build/qemu/qemu-system-aarch64` if built, else `qemu-system-aarch64` | The QEMU to run. `run-gui` and `debug` add KOS's GPU device (`-device kos-gl-device`) when it's KOS's own. |
 | `UTC_OFFSET` | this computer's (`date +%z`) | Time zone for the taskbar clock, e.g. `+0100`. The clock chip itself runs in UTC. |
 | `AUDIO`    | `coreaudio` / `pa` | QEMU audio backend for the sound device: your speakers on macOS / Linux. `AUDIO=none` for silence, `AUDIO="wav,path=out.wav"` to record. `make test` always records to `build/test.wav`. |
 | `FWD`      | (empty)           | Ports on your computer passed through to KOS, as QEMU `hostfwd` rules separated by spaces: `FWD="tcp::8080-:80"` makes your computer's `localhost:8080` reach KOS's port 80. |
@@ -273,6 +277,7 @@ Programs are freestanding: they start at `_start`, must call `exit(status)` (0 f
 | `crypto.h` | SHA-256, SHA-512, HMAC-SHA256 and AES-256-GCM, done by the kernel; `crypto_equal` for comparing MACs; X25519, Ed25519 and base64 |
 | `canvas.h` | Windows you draw pixels into, for graphics and games |
 | `render3d.h` | A software 3D renderer for canvases: a camera, shapes, terrain, lighting and fog, with a depth buffer |
+| `gl.h` | OpenGL 1.x for canvases, drawn by the Mac's GPU, with HLSL shaders (needs KOS's own QEMU) |
 
 See `userspace/prog/ui_demo.c` for a program with a window.
 
@@ -284,7 +289,7 @@ A program has file descriptors, as on Unix (`kernel/src/fd.rs`): 0, 1 and 2 are 
 
 #### Syscalls
 
-Under the library, a program talks to the kernel with `svc #n`, where `n` picks the syscall. Arguments go in `x0`-`x4`, and syscalls with several jobs (4-7, 12, 13, 15-17) take a sub-command in `x16`. The result comes back in `x0`: `-1` (`u64::MAX`) means it failed, and sub-command 5 of syscall 13 (`last_error()`) says why. Pointers are checked against the program's own memory, and a bad one fails instead of crashing anything. Strings passed with a length aren't NUL-terminated; the others are. The kernel side is `kernel/src/syscall.rs`.
+Under the library, a program talks to the kernel with `svc #n`, where `n` picks the syscall. Arguments go in `x0`-`x4`, and syscalls with several jobs (4-7, 12, 13, 15-18) take a sub-command in `x16`. The result comes back in `x0`: `-1` (`u64::MAX`) means it failed, and sub-command 5 of syscall 13 (`last_error()`) says why. Pointers are checked against the program's own memory, and a bad one fails instead of crashing anything. Strings passed with a length aren't NUL-terminated; the others are. The kernel side is `kernel/src/syscall.rs`.
 
 | `svc` | `x16` | Arguments → result | libc |
 |---|---|---|---|
@@ -370,12 +375,23 @@ Under the library, a program talks to the kernel with `svc #n`, where `n` picks 
 | | 3 | → 0 (stops whatever is playing) | `snd_stop` |
 | | 4 | → 1 if something is playing, else 0 | `snd_busy` |
 | | 5 | path, len → 0 once the WAV file is over, or -1 (`last_error` says why) | `play_file` |
+| 18 GPU | 0 | → 1 if QEMU has the kos-gl device, else 0 | `kgl_available` |
+| | 1 | width, height → context (one per canvas) | `kgl_open` |
+| | 2 | context, commands, len, frame (or 0) → 0; with a frame, the finished picture is copied into it | `kgl_swap`, `glFlush` |
+| | 3 | context \| program << 32, request, len, log, max → 0, or 1 with the compiler's messages in log | `kgl_hlsl_program` |
+| | 4 | context → 0 | `kgl_close` |
 
 Calls that copy something out (a file, a listing, a response) return its full length, even when the buffer was smaller, so passing a buffer of 0 bytes asks how big it is. The libc functions do that for you: ask the size, allocate, then copy.
 
 For graphics and games, `userspace/libc/canvas.h` gives a program a window it draws pixels into: lines, rectangles, circles and text, with mouse and keyboard events, presented a whole frame at a time. `canvas_demo` is a sketch pad with a bouncing ball, and `calculator` a scientific calculator (click or type an expression with `sin`, `cos`, `exp`, `ln`, `log`, `^`, `pi` and `e`; Enter for the result); their sources in `userspace/prog/` show how it fits together.
 
 For 3D, `userspace/libc/render3d.h` draws onto a canvas. Set a camera (`r3d_look_at`), then between `r3d_begin` and `r3d_end` place boxes, cones, cylinders, spheres, your own meshes, lines and heightfield terrain, moved by a model transform with push and pop for models made of parts. It does the perspective, clipping, flat shading by a sun, fog and the depth buffer, at a fraction of the window's size for chunky pixels (optionally with CRT scanlines), and `r3d_project` puts labels on things. `demo3d` is a scene to fly round with one of everything in it, and Powder Run (`games/powder/`) is a game built on it.
+
+#### 3D on the GPU
+
+`userspace/libc/gl.h` is OpenGL for canvases, drawn by the Mac's GPU: the classic 1.x API (`glBegin`/`glEnd`, vertex arrays, the matrix stack, `gluPerspective`, textures, up to 4 lights, fog, blending) plus shaders written in HLSL. `kgl_open(&canvas)` starts drawing into a canvas, `kgl_swap()` shows each frame, and `kgl_hlsl_program(vs_source, "vs_main", ps_source, "ps_main")` compiles a vertex and a pixel shader into a program for `glUseProgram`, with globals set by `glGetUniformLocation` and `glUniform*`. Vertex inputs are `POSITION`, `COLOR`, `NORMAL` and `TEXCOORD0`; declare `float4x4 kos_mvp` to get the matrix stack; `Texture2D t : register(t1)` reads texture unit 1. The header has the details. `hlsl_demo` is a spinning cube shaded in HLSL over a floor lit and fogged by plain OpenGL. Programs tcc builds inside KOS can use it too.
+
+It needs KOS's own QEMU (`make qemu`, or KOS.app), whose `kos-gl` device (`tools/qemu/hw/display/kos-gl.c`) does the drawing with macOS's OpenGL 4.1. The program keeps the OpenGL state and sends the device a stream of commands; each context is an offscreen framebuffer the size of its canvas, read back into the canvas once a frame. HLSL is compiled on the Mac by `kos-hlslc` (`tools/kos-hlslc`), which runs next to QEMU: glslang (`tools/glslang`) turns it into SPIR-V, and SPIRV-Cross (`tools/spirv-cross`) into GLSL. Compiler errors come back to the program from `kgl_error()`. Elsewhere `kgl_open` fails, saying why. (glslang's HLSL front end is deprecated upstream, to be removed in a future major release: keep the vendored 16.x, or move to DXC, when updating it.)
 
 Assembly (`.s`) files in `userspace/prog/` work the same way.
 
@@ -423,7 +439,7 @@ kos:/k> k run out.kbin
 - **Boot:** QEMU runs `bootloader.bin` from flash. It copies the kernel (embedded in it) to `0x4020_0000` and starts it. A small assembly stub (`kernel/src/arch/boot.s`) turns on the MMU and jumps into the kernel at its high address, then the boot steps registered with `#[initcall]` run in order and core 0 starts the scheduler. The other cores are started via PSCI.
 - **Memory:** the kernel runs in the higher half (`0xFFFF_FF80_0000_0000` + physical) through TTBR1, with separate permissions for code, read-only data and writable data. The low half (TTBR0) is the running program's own address space (see Programs below). The kernel heap (a free-list allocator that merges freed blocks) and the page frames share all the RAM above the kernel, with no fixed split: the heap starts at 32 MiB and grows upward into free memory when it runs out (and shrinks back when the end of it is free again), while page frames, for page tables and programs, are handed out from the top of RAM down. So the Browser can use most of the 512 MiB, or programs can.
 - **Tasks:** each core that runs tasks has its own preemptive round-robin scheduler, with 10 ms time slices: core 0 runs the kernel's tasks (shell, filesystem, network, UI), and cores 3 and 4 run programs, each new one going to whichever has fewer. (Core 1 runs `std::thread` work and core 2 async work, outside any scheduler.) Tasks block on wait queues until an interrupt or another task wakes them, and waking a task on another core sends that core an interrupt (a GIC SGI) so it switches right away. A core sleeps (`wfi`) when nothing is ready. Every switch saves the full register state, including floating-point/SIMD registers.
-- **Drivers:** interrupts come through a GICv2. The PL011 UART, virtio-blk and virtio-net raise interrupts; virtio-input provides the keyboard and tablet; the screen is a framebuffer shown through virtio-gpu (2D), or QEMU's ramfb if there's no GPU (`make run-gui DISPLAY_DEV=ramfb`); the PL031 real-time clock gives the date and time (in UTC, with the host's time zone passed in at boot).
+- **Drivers:** interrupts come through a GICv2. The PL011 UART, virtio-blk and virtio-net raise interrupts; virtio-input provides the keyboard and tablet; the screen is a framebuffer shown through virtio-gpu (2D), or QEMU's ramfb if there's no GPU (`make run-gui DISPLAY_DEV=ramfb`); KOS's own QEMU adds kos-gl, which draws programs' OpenGL with the Mac's GPU (see [3D on the GPU](#3d-on-the-gpu)); the PL031 real-time clock gives the date and time (in UTC, with the host's time zone passed in at boot).
 - **Network:** a network task owns the virtio-net device and the smoltcp TCP/IP stack. It configures itself over DHCP and handles DNS lookups, HTTP requests and pings for the rest of the kernel, and TCP connections (outgoing, and incoming through listeners) and UDP sockets for programs, each as a small state machine so they don't block each other. HTTPS runs TLS 1.3 (`embedded-tls`) in a separate `tls` task, keyed by the kernel's random number generator (ChaCha20, seeded and reseeded from the CPU's hardware one, `RNDR`), with the network task carrying its encrypted bytes.
 - **Browser:** pages are rendered by [lighthouse](kernel/crates/lighthouse), a small HTML/CSS engine ported to `no_std`: parse, style, lay out (with word wrapping), then paint into a display list. The Browser keeps only that list and draws just the part in view. It draws images and form fields itself, as boxes lighthouse leaves room for.
 - **K-AI:** the `kai` crate (`kernel/crates/kai`) runs the model, a tokenizer and transformer written to match the PyTorch original exactly. `kernel/src/assistant` loads it from the disk and turns what it understood into actions.
@@ -449,7 +465,7 @@ kernel/
     process.rs         programs: address spaces, heaps, exit statuses, file descriptor tables
     fd.rs              file descriptors: open files, pipes, the console
     loader/            ELF loading and the program runner task
-    drivers/           UART, display (virtio-gpu or ramfb + fw_cfg), virtio (blk, gpu, input, net, snd), input events, panic screen
+    drivers/           UART, display (virtio-gpu or ramfb + fw_cfg), virtio (blk, gpu, input, net, snd, kgl), input events, panic screen
     net/               network task: DHCP, DNS, HTTP client, TLS, ping, TCP + UDP sockets (on smoltcp)
     sound/             the one-voice sound system: tones, tunes and their notation, WAV decoding (wav.rs), the task feeding the sound device
     rand/              random numbers (ChaCha20, seeded by RNDR)
@@ -461,10 +477,13 @@ kernel/
     k/                 the K compiler (lexer → parser → typecheck → IR → AArch64 → KBIN)
     std/               in-kernel std: locks, Rc/RefCell, hash map, channels, threads, io::{Read, Write}, net::{TcpStream, TcpListener, UdpSocket}
 userspace/
-  libc/                the C library: syscalls (sys.h), printf (print/print.h), canvases (canvas.h), maths (math.h)
+  libc/                the C library: syscalls (sys.h), printf (print/print.h), canvases (canvas.h), maths (math.h), OpenGL (gl.h)
   prog/                programs; every .c / .s file here is built and put on the disk
 disk/                  files that go on disk.img
 tools/mkdisk/          host tool that builds disk.img (and puts files into an existing one)
 tools/assistant/       K-AI's training: intents, data generator, model, tests, export
-tools/qemu/            QEMU 11.1.1, vendored (minus roms/), for KOS's own GPU device later
+tools/qemu/            QEMU 11.1.1, vendored (minus roms/), with KOS's kos-gl device (hw/display/kos-gl.c)
+tools/kos-hlslc/       the HLSL compiler kos-gl runs: HLSL → SPIR-V (glslang) → GLSL (SPIRV-Cross)
+tools/glslang/         glslang 16.6.0, vendored (minus its tests)
+tools/spirv-cross/     SPIRV-Cross vulkan-sdk-1.4.363.0, vendored (minus its tests)
 ```

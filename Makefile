@@ -4,6 +4,9 @@
 #   make run        boot with serial console in this terminal, no display
 #   make run-gui    boot with a display window + serial in this terminal
 #                   (DISPLAY_DEV=ramfb for the plain framebuffer instead of virtio-gpu)
+#   make qemu       build KOS's own QEMU (tools/qemu, with the kos-gl device
+#                   gl.h draws with) and kos-hlslc (HLSL for it) into
+#                   build/qemu; run-gui and debug use it once it's there
 #   make debug      run-gui, with QEMU's debug server on DEBUG_PORT (1234) for
 #                   lldb; WAIT=1 holds every core at the first instruction
 #   make lldb       attach lldb to `make debug` (in another terminal), with the
@@ -30,8 +33,8 @@
 #   make digit-setup create the digit recogniser's Python venv (once)
 #   make digit-train make its training data, train it and export the model
 #   make digit-upload put the exported recogniser on disk.img
-#   make package    build build/KOS.app: KOS, a fresh disk and QEMU (with
-#                   its libraries) in one double-clickable Mac app
+#   make package    build build/KOS.app: KOS, a fresh disk and KOS's QEMU
+#                   (with its libraries) in one double-clickable Mac app
 #   make doc        build the kernel's API docs (rustdoc, private items too) into
 #                   target/aarch64-unknown-none/doc/; OPEN=1 opens them in a browser
 #   make clean
@@ -82,8 +85,16 @@ TEST_HOST_PORT := 47321
 KERNEL_BIN := $(BUILD)/kernel.bin
 KOS_BIN    := $(BUILD)/kos.bin
 
+# KOS's own QEMU (make qemu), if it's been built, else the one on the PATH.
+# Only KOS's has the kos-gl device, which gl.h needs: run-gui and debug
+# add it when they run that one.
+KOS_QEMU   := $(BUILD)/qemu/qemu-system-aarch64
+HLSLC      := $(BUILD)/qemu/kos-hlslc
+QEMU_BIN   ?= $(if $(wildcard $(KOS_QEMU)),$(KOS_QEMU),$(shell command -v qemu-system-aarch64))
+GL_DEVICE  := $(if $(filter $(KOS_QEMU),$(QEMU_BIN)),-device kos-gl-device)
+
 # Recursive (=), so a target can add to FWD.
-QEMU = qemu-system-aarch64 \
+QEMU = $(QEMU_BIN) \
 	-machine virt,secure=off,highmem=off -accel $(ACCEL) -cpu $(CPU) -smp $(SMP) -m $(MEM) \
 	-bios $(KOS_BIN) \
 	-global virtio-mmio.force-legacy=false \
@@ -94,7 +105,7 @@ QEMU = qemu-system-aarch64 \
 	-rtc base=utc -fw_cfg name=opt/kos/utc_offset,string=$(UTC_OFFSET) \
 	$(if $(LOG),-fw_cfg name=opt/kos/log$(comma)string=$(subst $(comma),$(comma)$(comma),$(LOG)))
 
-.PHONY: all kernel kos run run-gui debug lldb test doc package user games tcc-libs tcc-progs tcc-kos tcc-disk disk kai kai-setup kai-train kai-upload digit-setup digit-train digit-upload clean FORCE
+.PHONY: all kernel kos run run-gui debug lldb test doc package qemu user games tcc-libs tcc-progs tcc-kos tcc-disk disk kai kai-setup kai-train kai-upload digit-setup digit-train digit-upload clean FORCE
 
 all: kos
 
@@ -115,12 +126,12 @@ run: kos | $(DISK)
 	$(QEMU) -nographic
 
 run-gui: kos | $(DISK)
-	$(QEMU) -device $(DISPLAY_DEVICE) -serial mon:stdio -display $(GUI)
+	$(QEMU) -device $(DISPLAY_DEVICE) $(GL_DEVICE) -serial mon:stdio -display $(GUI)
 
 DEBUG_PORT ?= 1234
 
 debug: kos | $(DISK)
-	$(QEMU) -device $(DISPLAY_DEVICE) -serial mon:stdio -display $(GUI) -gdb tcp::$(DEBUG_PORT) $(if $(WAIT),-S)
+	$(QEMU) -device $(DISPLAY_DEVICE) $(GL_DEVICE) -serial mon:stdio -display $(GUI) -gdb tcp::$(DEBUG_PORT) $(if $(WAIT),-S)
 
 lldb:
 	lldb $(TARGET)/kos-kernel -o "command script import tools/lldb/kos.py" -o "kos attach $(DEBUG_PORT)"
@@ -140,18 +151,49 @@ test: | $(DISK)
 	fi
 
 # KOS.app: build/kos.bin, a fresh disk (not $(DISK), which may be in use)
-# and QEMU_BIN with every library it needs, by tools/package_app.py. The
-# app's launcher repeats the QEMU flags above: keep the two in step.
-QEMU_BIN    ?= $(shell command -v qemu-system-aarch64)
-PACKAGE_DIR := $(BUILD)/package
+# and KOS's QEMU (or QEMU_BIN, if given) with every library it needs, and
+# kos-hlslc, by tools/package_app.py. The app's launcher repeats the QEMU
+# flags above: keep the two in step.
+PACKAGE_DIR  := $(BUILD)/package
+PACKAGE_QEMU := $(if $(filter command line,$(origin QEMU_BIN)),$(QEMU_BIN),$(KOS_QEMU))
 
 package:
 	$(MAKE) kos FEATURES=
+	$(if $(filter $(KOS_QEMU),$(PACKAGE_QEMU)),$(MAKE) qemu)
 	@mkdir -p $(PACKAGE_DIR)
 	rm -f $(PACKAGE_DIR)/disk.img
 	$(MAKE) disk DISK=$(PACKAGE_DIR)/disk.img
-	python3 tools/package_app.py --qemu "$(QEMU_BIN)" --kos $(KOS_BIN) --disk $(PACKAGE_DIR)/disk.img --out $(BUILD)/KOS.app
+	python3 tools/package_app.py --qemu "$(PACKAGE_QEMU)" $(if $(filter $(KOS_QEMU),$(PACKAGE_QEMU)),--hlslc $(HLSLC)) \
+		--kos $(KOS_BIN) --disk $(PACKAGE_DIR)/disk.img --out $(BUILD)/KOS.app
 	@echo "make package: open $(BUILD)/KOS.app, or copy it to /Applications"
+
+# ---- KOS's QEMU -----------------------------------------------------------------
+# tools/qemu is QEMU 11.1.1 with KOS's kos-gl device (hw/display/kos-gl.c),
+# which draws for gl.h with the Mac's OpenGL. It's built for aarch64 only;
+# --disable-pvg leaves out the Apple paravirtualized graphics device, which
+# doesn't build with the macOS 27 SDK. kos-hlslc (tools/kos-hlslc, with
+# glslang and SPIRV-Cross from tools/) compiles programs' HLSL for it, and
+# goes next to QEMU, where the device looks for it.
+QEMU_BUILD := $(BUILD)/qemu
+HLSLC_BUILD := $(BUILD)/kos-hlslc
+
+qemu: $(KOS_QEMU) $(HLSLC)
+
+$(QEMU_BUILD)/build.ninja:
+	@mkdir -p $(QEMU_BUILD)
+	cd $(QEMU_BUILD) && ../../tools/qemu/configure --target-list=aarch64-softmmu --enable-cocoa --disable-docs --disable-pvg
+
+# Ninja knows what changed.
+$(KOS_QEMU): $(QEMU_BUILD)/build.ninja FORCE
+	ninja -C $(QEMU_BUILD) qemu-system-aarch64
+
+$(HLSLC_BUILD)/build.ninja:
+	cmake -S tools/kos-hlslc -B $(HLSLC_BUILD) -G Ninja -DCMAKE_BUILD_TYPE=Release -Wno-deprecated
+
+$(HLSLC): $(HLSLC_BUILD)/build.ninja FORCE
+	ninja -C $(HLSLC_BUILD) kos-hlslc
+	@mkdir -p $(QEMU_BUILD)
+	cp $(HLSLC_BUILD)/kos-hlslc $@
 
 # The kernel is a binary crate, so its docs include private items; only
 # its own crates are documented, not the dependencies.

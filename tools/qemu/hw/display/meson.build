@@ -62,6 +62,10 @@ system_ss.add(when: 'CONFIG_ARTIST', if_true: files('artist.c'))
 
 system_ss.add(when: 'CONFIG_ATI_VGA', if_true: [files('ati.c', 'ati_2d.c', 'ati_dbg.c'), pixman])
 
+if host_os == 'darwin'
+  kos_gl_opengl = dependency('appleframeworks', modules: 'OpenGL', required: false)
+  system_ss.add(when: [kos_gl_opengl, gio, 'CONFIG_KOS_GL'], if_true: files('kos-gl.c'))
+endif
 system_ss.add(when: [pvg, 'CONFIG_MAC_PVG_PCI'],     if_true: [files('apple-gfx.m', 'apple-gfx-pci.m')])
 system_ss.add(when: [pvg, 'CONFIG_MAC_PVG_MMIO'],    if_true: [files('apple-gfx.m', 'apple-gfx-mmio.m')])
 

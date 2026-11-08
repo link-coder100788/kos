@@ -1097,6 +1097,76 @@ pub fn syscall_sound(frame: &mut SyscallContext) {
     };
 }
 
+// ---- the GPU ----------------------------------------------------------------------
+
+mod gpu {
+    use kos_derive::const_unique;
+
+    pub const AVAILABLE: u64 = 0; // () -> 1 if there's a kos-gl device, else 0
+    pub const OPEN: u64 = 1;      // (width, height) -> context
+    pub const SUBMIT: u64 = 2;    // (context, commands, len, frame or 0) -> 0
+    pub const HLSL: u64 = 3;      // (context | program << 32, request, len, log, log_max) -> 0, or 1 with the log
+    pub const CLOSE: u64 = 4;     // (context)
+
+    const_unique!(AVAILABLE, OPEN, SUBMIT, HLSL, CLOSE);
+}
+
+/// GL contexts on the host's GPU, for gl.h (see drivers/virtio/kgl.rs).
+/// A program can only use contexts it opened, and they're closed for it
+/// when it ends. Errors return u64::MAX, with the reason kept for
+/// `last_error`.
+#[syscall(18)]
+pub fn syscall_gpu(frame: &mut SyscallContext) {
+    use crate::drivers::virtio::kgl;
+    let ctx = frame[0] as u32;
+    let result: Result<u64, alloc::string::String> = match frame[16] {
+        gpu::AVAILABLE => Ok(kgl::available() as u64),
+        gpu::OPEN => kgl::open(frame[0].min(u32::MAX as u64) as u32, frame[1].min(u32::MAX as u64) as u32).map(u64::from),
+        gpu::SUBMIT => match (user_bytes(frame, frame[1], frame[2]), kgl::size(ctx)) {
+            (Some(commands), Some((w, h))) => {
+                let frame_len = w as u64 * h as u64 * 4;
+                match frame[3] {
+                    0 => kgl::submit(ctx, commands, None).map(|()| 0),
+                    ptr => match user_bytes_mut(frame, ptr, frame_len) {
+                        Some(pixels) => kgl::submit(ctx, commands, Some(pixels)).map(|()| 0),
+                        None => Err("bad frame buffer".to_string()),
+                    },
+                }
+            }
+            (None, _) => Err("bad commands".to_string()),
+            (_, None) => Err("no such context".to_string()),
+        },
+        gpu::HLSL => match user_bytes(frame, frame[1], frame[2]) {
+            Some(request) => kgl::hlsl(ctx, (frame[0] >> 32) as u32, request).and_then(|log| match log {
+                None => Ok(0),
+                Some(log) => {
+                    // NUL-terminated, cut short if it doesn't fit.
+                    let mut text = log.into_bytes();
+                    let max = frame[4] as usize;
+                    if max > 0 {
+                        text.truncate(max - 1);
+                        text.push(0);
+                    }
+                    match copy_out(frame, frame[3], frame[4], &text) {
+                        u64::MAX => Err("bad log buffer".to_string()),
+                        _ => Ok(1),
+                    }
+                }
+            }),
+            None => Err("bad shaders".to_string()),
+        },
+        gpu::CLOSE => {
+            kgl::close(ctx);
+            Ok(0)
+        }
+        _ => {
+            log::warn!("gpu syscall: unknown sub-command {}", frame[16]);
+            Err("unknown gpu call".to_string())
+        }
+    };
+    frame[0] = result.unwrap_or_else(|why| fail(&why));
+}
+
 fn find_syscall(num: u64) -> Option<&'static SyscallEntry> {
     unsafe {
         let mut ptr = core::ptr::addr_of!(__syscalls_start);
@@ -1132,8 +1202,8 @@ pub fn dispatch_syscall(num: u64, frame: &mut SyscallContext) -> bool {
         return true;
     }
     let name = entry.name.trim_start_matches("syscall_");
-    // Syscalls 4-7, 12-13 and 15-17 take a sub-command in x16.
-    if (4..=7).contains(&num) || (12..=13).contains(&num) || (15..=17).contains(&num) {
+    // Syscalls 4-7, 12-13 and 15-18 take a sub-command in x16.
+    if (4..=7).contains(&num) || (12..=13).contains(&num) || (15..=18).contains(&num) {
         log::trace!("{} (svc {}) sub={} x0={:#x} x1={:#x} x2={:#x} x3={:#x}", name, num, frame[16], frame[0], frame[1], frame[2], frame[3]);
     } else {
         log::trace!("{} (svc {}) x0={:#x} x1={:#x} x2={:#x} x3={:#x}", name, num, frame[0], frame[1], frame[2], frame[3]);

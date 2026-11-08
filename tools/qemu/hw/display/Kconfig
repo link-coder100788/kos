@@ -98,6 +98,12 @@ config QXL
     depends on SPICE && PCI && PIXMAN
     select VGA
 
+# KOS's OpenGL device (kos-gl.c); built on macOS only.
+config KOS_GL
+    bool
+    default y
+    depends on VIRTIO
+
 config VIRTIO_GPU
     bool
     default y

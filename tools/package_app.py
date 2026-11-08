@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Packages KOS and QEMU into a double-clickable macOS app (`make package`).
 
-    tools/package_app.py --qemu <qemu-system-aarch64> --kos build/kos.bin
-                         --disk disk.img --out build/KOS.app
+    tools/package_app.py --qemu <qemu-system-aarch64> [--hlslc build/qemu/kos-hlslc]
+                         --kos build/kos.bin --disk disk.img --out build/KOS.app
 
 The app holds:
 
     Contents/MacOS/KOS                  the launcher (a shell script)
     Contents/MacOS/qemu-system-aarch64  QEMU, re-signed with its entitlements
+    Contents/MacOS/kos-hlslc            with --hlslc (for KOS's own QEMU): the
+                                        HLSL compiler its kos-gl device runs
     Contents/Frameworks/*.dylib         every library QEMU needs that macOS
                                         doesn't have, pointed at each other
     Contents/Resources/kos.bin          the bootloader with the kernel
@@ -22,7 +24,9 @@ keeping its com.apple.security.hypervisor entitlement for ACCEL=hvf.
 
 The launcher keeps the disk (and the settings, kos.conf) in
 ~/Library/Application Support/KOS, so what you do in KOS outlives the app
-being rebuilt. Its QEMU flags follow the Makefile's QEMU variable.
+being rebuilt. Its QEMU flags follow the Makefile's QEMU variable, plus
+the kos-gl device (for gl.h) when kos-hlslc is there, which means the QEMU
+is KOS's own.
 """
 
 import argparse
@@ -215,6 +219,8 @@ netdev="user,id=net0"
 for rule in $FWD; do netdev="$netdev,hostfwd=$rule"; done
 extra=()
 [ "$FULL_SCREEN" = 1 ] && extra+=(-full-screen)
+# KOS's own QEMU comes with kos-hlslc, and has the kos-gl device gl.h draws with.
+[ -x "$here/kos-hlslc" ] && extra+=(-device kos-gl-device)
 log=()
 [ -n "$LOG" ] && log=(-fw_cfg "name=opt/kos/log,string=${LOG//,/,,}")
 
@@ -264,6 +270,7 @@ def sha256_file(path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--qemu", required=True, help="qemu-system-aarch64 to bundle")
+    parser.add_argument("--hlslc", help="kos-hlslc, for KOS's own QEMU (build/qemu/kos-hlslc)")
     parser.add_argument("--kos", required=True, help="build/kos.bin")
     parser.add_argument("--disk", required=True, help="the disk image to start from")
     parser.add_argument("--out", required=True, help="the .app to make (replaced if it exists)")
@@ -274,7 +281,7 @@ def main():
     qemu = os.path.realpath(qemu)
     if not os.path.isfile(qemu):
         sys.exit(f"package: no QEMU at {args.qemu} (brew install qemu, or pass QEMU_BIN=...)")
-    for path in (args.kos, args.disk):
+    for path in (args.kos, args.disk) + ((args.hlslc,) if args.hlslc else ()):
         if not os.path.isfile(path):
             sys.exit(f"package: {path} is missing")
 
@@ -296,6 +303,16 @@ def main():
     rewrites = bundle_libraries(bundled_qemu, qemu, frameworks)
     fix_load_paths(rewrites)
 
+    bundled_hlslc = None
+    if args.hlslc:
+        # It's built to need only what every Mac has (libc++).
+        others = [d for d in dependencies(args.hlslc) if not is_system(d)]
+        if others:
+            sys.exit(f"package: {args.hlslc} needs {', '.join(others)}")
+        bundled_hlslc = os.path.join(macos, "kos-hlslc")
+        shutil.copy2(args.hlslc, bundled_hlslc)
+        os.chmod(bundled_hlslc, 0o755)
+
     shutil.copy2(args.kos, os.path.join(resources, "kos.bin"))
     shutil.copy2(args.disk, os.path.join(resources, "disk.img"))
     with open(os.path.join(resources, "disk.id"), "w") as f:
@@ -315,6 +332,8 @@ def main():
     sign(bundled_qemu, ent if entitlements(qemu, ent) else None)
     if os.path.exists(ent):
         os.remove(ent)
+    if bundled_hlslc:
+        sign(bundled_hlslc)
     sign(app)
 
     size = sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(app) for f in fs)
