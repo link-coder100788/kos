@@ -1,0 +1,75 @@
+# Builds KOS.app (make package) on a Mac and publishes it as a release:
+# every push to main replaces the "latest" pre-release, and a pushed tag
+# like v0.2.0 gets a release of its own. The app is only signed ad hoc
+# (Apple silicon runs nothing unsigned), not with an Apple Developer ID,
+# so macOS quarantines the download; the release notes say what to do.
+name: KOS.app
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# A newer push to the same branch makes an older build pointless.
+concurrency:
+  group: app-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  app:
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      HOMEBREW_NO_INSTALL_CLEANUP: 1
+      HOMEBREW_NO_ENV_HINTS: 1
+    steps:
+      - uses: actions/checkout@v4
+
+      # QEMU's libraries (KOS's QEMU is built against Homebrew's, and the
+      # app bundles them), the tools to build it and kos-hlslc, and lld
+      # for the C programs.
+      - name: Install tools
+        run: brew install qemu ninja cmake lld
+
+      # rustup reads rust-toolchain.toml on first use.
+      - name: Install cargo-binutils
+        run: cargo install cargo-binutils
+
+      - name: Build KOS.app
+        run: |
+          version=0.1.0
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then version="${GITHUB_REF_NAME#v}"; fi
+          make package APP_VERSION="$version"
+
+      # ditto keeps the app's signatures and symlinks intact.
+      - name: Zip it
+        run: ditto -c -k --keepParent build/KOS.app KOS-macos-arm64.zip
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<EOF
+          KOS.app for Apple silicon Macs (macOS 15 or later), built from ${GITHUB_SHA::7}.
+          It holds KOS, a fresh disk, and KOS's own QEMU, with GPU drawing for gl.h.
+
+          The app isn't signed with an Apple Developer ID, so macOS stops it the first time
+          ("Apple could not verify..."). Either unzip it and run
+
+              xattr -dr com.apple.quarantine KOS.app
+
+          or try to open it once, then click Open Anyway in System Settings > Privacy & Security.
+
+          KOS keeps its disk and settings in ~/Library/Application Support/KOS.
+          EOF
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            gh release create "$GITHUB_REF_NAME" KOS-macos-arm64.zip --title "KOS $GITHUB_REF_NAME" --notes-file notes.md
+          else
+            gh release delete latest --yes --cleanup-tag || true
+            gh release create latest KOS-macos-arm64.zip --prerelease --target "$GITHUB_SHA" \
+              --title "Latest build (main)" --notes-file notes.md
+          fi
