@@ -14,3 +14,5 @@ disk/files/files2/
 __pycache__/
 # vendored QEMU firmware images (tools/qemu/pc-bios)
 !tools/qemu/**/*.img
+# meson lock file the QEMU build makes
+tools/qemu/subprojects/.wraplock
