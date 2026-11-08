@@ -1,3 +1,7 @@
 *.k linguist-vendored
 tools/tinycc/** linguist-vendored
 tools/qemu/** linguist-vendored
+tools/glslang/** linguist-vendored
+tools/spirv-cross/** linguist-vendored
+# KOS's own device, in the vendored QEMU
+tools/qemu/hw/display/kos-gl.c -linguist-vendored
