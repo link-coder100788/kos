@@ -20,6 +20,6 @@ void _start(void) {
     long id = spawn(argv[0], args);
     long stat = proc_wait(id);
     long sec_f = time(0);
-    printf("time %s %ld s stat %ld\n", argv[0], sec_f-sec, stat);
+    printf("duration %s %ld s stat %ld\n", argv[0], sec_f-sec, stat);
     exit(0);
 }
