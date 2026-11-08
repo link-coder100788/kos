@@ -155,6 +155,8 @@ test: | $(DISK)
 # kos-hlslc, by tools/package_app.py. The app's launcher repeats the QEMU
 # flags above: keep the two in step.
 PACKAGE_DIR  := $(BUILD)/package
+# The app's version, in its Info.plist (CI sets it from a release tag).
+APP_VERSION  ?= 0.1.0
 PACKAGE_QEMU := $(if $(filter command line,$(origin QEMU_BIN)),$(QEMU_BIN),$(KOS_QEMU))
 
 package:
@@ -164,7 +166,7 @@ package:
 	rm -f $(PACKAGE_DIR)/disk.img
 	$(MAKE) disk DISK=$(PACKAGE_DIR)/disk.img
 	python3 tools/package_app.py --qemu "$(PACKAGE_QEMU)" $(if $(filter $(KOS_QEMU),$(PACKAGE_QEMU)),--hlslc $(HLSLC)) \
-		--kos $(KOS_BIN) --disk $(PACKAGE_DIR)/disk.img --out $(BUILD)/KOS.app
+		--kos $(KOS_BIN) --disk $(PACKAGE_DIR)/disk.img --out $(BUILD)/KOS.app --version $(APP_VERSION)
 	@echo "make package: open $(BUILD)/KOS.app, or copy it to /Applications"
 
 # ---- KOS's QEMU -----------------------------------------------------------------
@@ -297,7 +299,12 @@ tcc-libs: $(TCC_LIBS) $(TCC_CRT)
 
 # tcc's own Makefile knows when the compiler or its libtcc1 is out of date;
 # `cross-arm64` brings both up to date.
-$(TCC_X): FORCE
+# configure writes config.mak, which tcc's own .gitignore keeps out of git,
+# so a fresh clone runs it once.
+$(TCC_DIR)/config.mak:
+	cd $(TCC_DIR) && ./configure
+
+$(TCC_X): $(TCC_DIR)/config.mak FORCE
 	$(MAKE) -C $(TCC_DIR) cross-arm64
 $(TCC_DIR)/arm64-libtcc1.a: $(TCC_X) ;
 
