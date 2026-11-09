@@ -31,7 +31,7 @@ enum {
     CMD_FRONT_FACE = 11, CMD_TEX_IMAGE = 12, CMD_TEX_DELETE = 13, CMD_TEX_PARAM = 14,
     CMD_BIND_TEXTURE = 15, CMD_USE_PROGRAM = 16, CMD_PROGRAM_DELETE = 17, CMD_UNIFORM = 18,
     CMD_FIXED_STATE = 19, CMD_DRAW = 20, CMD_GENERATE_MIPMAP = 21, CMD_SCISSOR = 22,
-    CMD_COLOR_MASK = 23, CMD_POLYGON_OFFSET = 24,
+    CMD_COLOR_MASK = 23, CMD_POLYGON_OFFSET = 24, CMD_DRAW_ATTRIBS = 25, CMD_POLYGON_MODE = 26,
 };
 enum { UNIFORM_FLOAT = 1, UNIFORM_INT = 2, UNIFORM_MAT3 = 3, UNIFORM_MAT4 = 4 };
 
@@ -71,6 +71,7 @@ typedef struct {
 #define MAX_UNIFORM_NAME 63
 #define TEXTURE_UNITS 8
 #define MAX_SHADERS 32
+#define MAX_ATTRIBS 8              // glVertexAttribPointer's locations
 #define MAX_LINKABLE 32
 
 typedef struct {
@@ -80,6 +81,30 @@ typedef struct {
     GLsizei stride;
     const void* pointer;
 } vertex_array;
+
+// A buffer object: its data is kept here, and sent with each draw.
+typedef struct {
+    int used;
+    uint8_t* data;
+    size_t size;
+} buffer_object;
+
+// One glVertexAttribPointer location.
+typedef struct {
+    int enabled;
+    GLint size;
+    GLenum type;
+    GLboolean normalized;
+    GLsizei stride;
+    GLuint buffer;             // 0: pointer is the program's memory
+    const uint8_t* pointer;    // else an offset into the buffer
+} attrib;
+
+typedef struct {
+    int used;
+    attrib attribs[MAX_ATTRIBS];
+    GLuint elements;           // the GL_ELEMENT_ARRAY_BUFFER
+} vertex_array_object;
 
 static struct {
     canvas_t* canvas;
@@ -134,6 +159,15 @@ static struct {
         int linked;
         char* log;
     } linkable[MAX_LINKABLE];
+
+    // Buffer and vertex array object n is buffers[n - 1] / vaos[n - 1];
+    // vertex array object 0 is default_vao.
+    buffer_object* buffers;
+    GLuint n_buffers;
+    vertex_array_object* vaos;
+    GLuint n_vaos;
+    vertex_array_object default_vao;
+    GLuint array_buffer, vao;
 } gl;
 
 static void set_error(GLenum e) {
@@ -858,18 +892,304 @@ static void draw_arrays(GLenum mode, size_t first, size_t count, GLenum index_ty
     free(v);
 }
 
-void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
-    if (first < 0 || count < 0) { set_error(GL_INVALID_VALUE); return; }
-    draw_arrays(mode, (size_t)first, (size_t)count, 0, NULL);
+// ---- buffer objects and vertex array objects -----------------------------------------------
+
+static vertex_array_object* current_vao(void) {
+    return gl.vao ? &gl.vaos[gl.vao - 1] : &gl.default_vao;
 }
 
+static buffer_object* buffer(GLuint id) {
+    return id && id <= gl.n_buffers && gl.buffers[id - 1].used ? &gl.buffers[id - 1] : NULL;
+}
+
+// Hands out unused slots of a table of objects of `size` bytes, growing it.
+static int gen_objects(void** table, GLuint* n, size_t size, GLsizei count, GLuint* ids) {
+    if (count < 0) { set_error(GL_INVALID_VALUE); return -1; }
+    for (GLsizei k = 0; k < count; k++) {
+        GLuint id = 0;
+        for (GLuint i = 0; i < *n && !id; i++)
+            if (!*(int*)((uint8_t*)*table + i * size)) id = i + 1;
+        if (!id) {
+            void* grown = realloc(*table, (*n + 1) * size);
+            if (!grown) { set_error(GL_OUT_OF_MEMORY); return -1; }
+            *table = grown;
+            id = ++*n;
+        }
+        uint8_t* slot = (uint8_t*)*table + (id - 1) * size;
+        memset(slot, 0, size);
+        *(int*)slot = 1;
+        ids[k] = id;
+    }
+    return 0;
+}
+
+void glGenBuffers(GLsizei n, GLuint* buffers) {
+    gen_objects((void**)&gl.buffers, &gl.n_buffers, sizeof(buffer_object), n, buffers);
+}
+
+void glDeleteBuffers(GLsizei n, const GLuint* buffers) {
+    for (GLsizei k = 0; k < n; k++) {
+        buffer_object* b = buffer(buffers[k]);
+        if (!b) continue;
+        free(b->data);
+        memset(b, 0, sizeof *b);
+        if (gl.array_buffer == buffers[k]) gl.array_buffer = 0;
+        if (current_vao()->elements == buffers[k]) current_vao()->elements = 0;
+    }
+}
+
+static GLuint* binding(GLenum target) {
+    switch (target) {
+    case GL_ARRAY_BUFFER: return &gl.array_buffer;
+    case GL_ELEMENT_ARRAY_BUFFER: return &current_vao()->elements;
+    }
+    return NULL;
+}
+
+void glBindBuffer(GLenum target, GLuint id) {
+    GLuint* bound = binding(target);
+    if (!bound) { set_error(GL_INVALID_ENUM); return; }
+    if (id && !buffer(id)) { set_error(GL_INVALID_OPERATION); return; }
+    *bound = id;
+}
+
+void glBufferData(GLenum target, GLsizeiptr size, const GLvoid* data, GLenum usage) {
+    (void)usage;
+    GLuint* bound = binding(target);
+    if (!bound) { set_error(GL_INVALID_ENUM); return; }
+    buffer_object* b = buffer(*bound);
+    if (!b || size < 0) { set_error(b ? GL_INVALID_VALUE : GL_INVALID_OPERATION); return; }
+    uint8_t* copy = malloc(size ? (size_t)size : 1);
+    if (!copy) { set_error(GL_OUT_OF_MEMORY); return; }
+    if (data) memcpy(copy, data, (size_t)size); else memset(copy, 0, (size_t)size);
+    free(b->data);
+    b->data = copy;
+    b->size = (size_t)size;
+}
+
+void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const GLvoid* data) {
+    GLuint* bound = binding(target);
+    if (!bound) { set_error(GL_INVALID_ENUM); return; }
+    buffer_object* b = buffer(*bound);
+    if (!b) { set_error(GL_INVALID_OPERATION); return; }
+    if (offset < 0 || size < 0 || (size_t)offset + (size_t)size > b->size) { set_error(GL_INVALID_VALUE); return; }
+    memcpy(b->data + offset, data, (size_t)size);
+}
+
+void glGenVertexArrays(GLsizei n, GLuint* arrays) {
+    gen_objects((void**)&gl.vaos, &gl.n_vaos, sizeof(vertex_array_object), n, arrays);
+}
+
+void glDeleteVertexArrays(GLsizei n, const GLuint* arrays) {
+    for (GLsizei k = 0; k < n; k++) {
+        GLuint id = arrays[k];
+        if (!id || id > gl.n_vaos || !gl.vaos[id - 1].used) continue;
+        gl.vaos[id - 1].used = 0;
+        if (gl.vao == id) gl.vao = 0;
+    }
+}
+
+void glBindVertexArray(GLuint array) {
+    if (array && (array > gl.n_vaos || !gl.vaos[array - 1].used)) { set_error(GL_INVALID_OPERATION); return; }
+    gl.vao = array;
+}
+
+static size_t type_size(GLenum type) {
+    switch (type) {
+    case GL_BYTE: case GL_UNSIGNED_BYTE: return 1;
+    case GL_SHORT: case GL_UNSIGNED_SHORT: return 2;
+    case GL_INT: case GL_UNSIGNED_INT: case GL_FLOAT: return 4;
+    }
+    return 0;
+}
+
+void glVertexAttribPointer(GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride,
+                           const GLvoid* pointer) {
+    if (index >= MAX_ATTRIBS || size < 1 || size > 4 || stride < 0) { set_error(GL_INVALID_VALUE); return; }
+    if (!type_size(type)) { set_error(GL_INVALID_ENUM); return; }
+    attrib* a = &current_vao()->attribs[index];
+    a->size = size;
+    a->type = type;
+    a->normalized = normalized;
+    a->stride = stride;
+    a->buffer = gl.array_buffer;
+    a->pointer = pointer;
+}
+
+void glEnableVertexAttribArray(GLuint index) {
+    if (index >= MAX_ATTRIBS) { set_error(GL_INVALID_VALUE); return; }
+    current_vao()->attribs[index].enabled = 1;
+}
+
+void glDisableVertexAttribArray(GLuint index) {
+    if (index >= MAX_ATTRIBS) { set_error(GL_INVALID_VALUE); return; }
+    current_vao()->attribs[index].enabled = 0;
+}
+
+void glPolygonMode(GLenum face, GLenum mode) {
+    if (face != GL_FRONT_AND_BACK || (mode != GL_POINT && mode != GL_LINE && mode != GL_FILL)) {
+        set_error(GL_INVALID_ENUM);
+        return;
+    }
+    command(CMD_POLYGON_MODE, 1, mode, 0, 0, 0);
+}
+
+static int attribs_enabled(void) {
+    for (int i = 0; i < MAX_ATTRIBS; i++)
+        if (current_vao()->attribs[i].enabled) return 1;
+    return 0;
+}
+
+// One component, as a float (normalized as OpenGL does).
+static float component(const uint8_t* p, GLenum type, GLboolean normalized) {
+    float f;
+    int8_t b; int16_t s; uint16_t us; int32_t i; uint32_t u;
+    switch (type) {
+    case GL_FLOAT: memcpy(&f, p, 4); return f;
+    case GL_UNSIGNED_BYTE: return normalized ? p[0] / 255.0f : p[0];
+    case GL_BYTE: memcpy(&b, p, 1); return normalized ? (b < -127 ? -1 : b / 127.0f) : b;
+    case GL_UNSIGNED_SHORT: memcpy(&us, p, 2); return normalized ? us / 65535.0f : us;
+    case GL_SHORT: memcpy(&s, p, 2); return normalized ? (s < -32767 ? -1 : s / 32767.0f) : s;
+    case GL_UNSIGNED_INT: memcpy(&u, p, 4); return normalized ? (float)(u / 4294967295.0) : (float)u;
+    case GL_INT: memcpy(&i, p, 4); return normalized ? (float)(i < -2147483647 ? -1 : i / 2147483647.0) : (float)i;
+    }
+    return 0;
+}
+
+// Where attribute a's data starts, and how many bytes of it there are
+// (SIZE_MAX for the program's own memory). NULL if it has none.
+static const uint8_t* attrib_data(const attrib* a, size_t* size) {
+    if (!a->buffer) {
+        *size = SIZE_MAX;
+        return a->pointer;
+    }
+    buffer_object* b = buffer(a->buffer);
+    if (!b || (size_t)a->pointer > b->size) return NULL;
+    *size = b->size - (size_t)a->pointer;
+    return b->data + (size_t)a->pointer;
+}
+
+// glDrawArrays and glDrawElements with glVertexAttribPointer's arrays:
+// each draw sends the enabled locations' values, as floats, to the
+// locations the shaders read.
+static void draw_attribs(GLenum mode, size_t first, size_t count, GLenum index_type, const uint8_t* indices) {
+    if (mode > GL_TRIANGLE_FAN) { set_error(GL_INVALID_ENUM); return; }
+    if (!gl.ctx || count == 0) return;
+    vertex_array_object* vao = current_vao();
+    const uint8_t* data[MAX_ATTRIBS];
+    size_t have[MAX_ATTRIBS], stride[MAX_ATTRIBS];
+    uint32_t layout = 0, floats = 0;
+    for (int i = 0; i < MAX_ATTRIBS; i++) {
+        const attrib* a = &vao->attribs[i];
+        if (!a->enabled) continue;
+        data[i] = attrib_data(a, &have[i]);
+        if (!data[i]) { set_error(GL_INVALID_OPERATION); return; }
+        stride[i] = a->stride ? (size_t)a->stride : a->size * type_size(a->type);
+        layout |= (uint32_t)a->size << (i * 4);
+        floats += (uint32_t)a->size;
+    }
+
+    // Which vertex each one sent is; strips, loops and fans too big for
+    // one command become lists, which split anywhere on a whole shape.
+    size_t max = (MAX_COMMAND - 5) / floats;
+    size_t n = count;
+    int list = mode == GL_POINTS || mode == GL_LINES || mode == GL_TRIANGLES;
+    if (!list && count > max) {
+        n = mode == GL_LINE_STRIP ? (count - 1) * 2 : mode == GL_LINE_LOOP ? count * 2 : (count - 2) * 3;
+    }
+    size_t* at = malloc(n * sizeof(size_t));
+    if (!at) { set_error(GL_OUT_OF_MEMORY); return; }
+    size_t top = 0;
+    for (size_t k = 0; k < count; k++) {
+        size_t i = first + k;
+        if (indices) {
+            i = index_type == GL_UNSIGNED_BYTE ? indices[k]
+              : index_type == GL_UNSIGNED_SHORT ? ((const uint16_t*)indices)[k]
+              : ((const uint32_t*)indices)[k];
+        }
+        if (i > top) top = i;
+        at[k] = i;
+    }
+    if (n != count) {
+        size_t* seq = malloc(count * sizeof(size_t));
+        if (!seq) { free(at); set_error(GL_OUT_OF_MEMORY); return; }
+        memcpy(seq, at, count * sizeof(size_t));
+        size_t m = 0;
+        if (mode == GL_LINE_STRIP || mode == GL_LINE_LOOP) {
+            for (size_t k = 0; k + 1 < count; k++) { at[m++] = seq[k]; at[m++] = seq[k + 1]; }
+            if (mode == GL_LINE_LOOP) { at[m++] = seq[count - 1]; at[m++] = seq[0]; }
+            mode = GL_LINES;
+        } else {
+            for (size_t k = 0; k + 2 < count; k++) {
+                int odd = mode == GL_TRIANGLE_STRIP && (k & 1);
+                at[m++] = mode == GL_TRIANGLE_FAN ? seq[0] : seq[odd ? k + 1 : k];
+                at[m++] = mode == GL_TRIANGLE_FAN ? seq[k + 1] : seq[odd ? k : k + 1];
+                at[m++] = seq[k + 2];
+            }
+            mode = GL_TRIANGLES;
+        }
+        n = m;
+        free(seq);
+        list = 1;
+    }
+    // Every vertex used must be inside its buffers.
+    for (int i = 0; i < MAX_ATTRIBS; i++) {
+        const attrib* a = &vao->attribs[i];
+        if (a->enabled && have[i] != SIZE_MAX && top * stride[i] + a->size * type_size(a->type) > have[i]) {
+            free(at);
+            set_error(GL_INVALID_OPERATION);
+            return;
+        }
+    }
+
+    send_fixed_state();
+    size_t per = mode == GL_TRIANGLES ? 3 : mode == GL_LINES ? 2 : 1;
+    size_t chunk = list ? max / per * per : n;
+    for (size_t start = 0; start < n; start += chunk) {
+        size_t len = n - start < chunk ? n - start : chunk;
+        uint32_t* w = begin_command(CMD_DRAW_ATTRIBS, 5 + len * floats);
+        if (!w) break;
+        w[0] = mode;
+        w[1] = (uint32_t)len;
+        w[2] = layout;
+        float* out = (float*)(w + 3);
+        for (size_t k = start; k < start + len; k++)
+            for (int i = 0; i < MAX_ATTRIBS; i++) {
+                const attrib* a = &vao->attribs[i];
+                if (!a->enabled) continue;
+                const uint8_t* p = data[i] + at[k] * stride[i];
+                for (int c = 0; c < a->size; c++)
+                    *out++ = component(p + c * type_size(a->type), a->type, a->normalized);
+            }
+    }
+    free(at);
+}
+
+void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
+    if (first < 0 || count < 0) { set_error(GL_INVALID_VALUE); return; }
+    if (attribs_enabled()) draw_attribs(mode, (size_t)first, (size_t)count, 0, NULL);
+    else draw_arrays(mode, (size_t)first, (size_t)count, 0, NULL);
+}
+
+// With a GL_ELEMENT_ARRAY_BUFFER bound, indices is an offset into it.
 void glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid* indices) {
     if (count < 0) { set_error(GL_INVALID_VALUE); return; }
     if (type != GL_UNSIGNED_BYTE && type != GL_UNSIGNED_SHORT && type != GL_UNSIGNED_INT) {
         set_error(GL_INVALID_ENUM);
         return;
     }
-    draw_arrays(mode, 0, (size_t)count, type, indices);
+    GLuint elements = current_vao()->elements;
+    if (elements) {
+        buffer_object* b = buffer(elements);
+        size_t offset = (size_t)indices;
+        if (!b || offset > b->size || (size_t)count * type_size(type) > b->size - offset) {
+            set_error(GL_INVALID_OPERATION);
+            return;
+        }
+        indices = b->data + offset;
+    }
+    if (attribs_enabled()) draw_attribs(mode, 0, (size_t)count, type, indices);
+    else draw_arrays(mode, 0, (size_t)count, type, indices);
 }
 
 // ---- textures -------------------------------------------------------------------------------
@@ -1306,6 +1626,13 @@ void kgl_close(void) {
     gl.len = gl.cap = gl.nverts = gl.verts_cap = 0;
     for (GLuint i = 1; i <= MAX_SHADERS; i++) glDeleteShader(i);
     for (int p = 0; p < MAX_LINKABLE; p++) free_linkable(p);
+    for (GLuint i = 0; i < gl.n_buffers; i++) free(gl.buffers[i].data);
+    free(gl.buffers);
+    free(gl.vaos);
+    gl.buffers = NULL;
+    gl.vaos = NULL;
+    gl.n_buffers = gl.n_vaos = gl.array_buffer = gl.vao = 0;
+    memset(&gl.default_vao, 0, sizeof gl.default_vao);
 }
 
 const char* kgl_error(void) {

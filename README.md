@@ -454,6 +454,7 @@ It's OpenGL 1.x as the old tutorials teach it:
 | Vertices | `glBegin`/`glEnd` with `glVertex`, `glColor`, `glNormal` and `glTexCoord`, every primitive including quads, quad strips and polygons; vertex arrays (`glVertexPointer`, `glColorPointer`, `glNormalPointer`, `glTexCoordPointer`) drawn with `glDrawArrays` or `glDrawElements` |
 | Textures | `glGenTextures`, `glBindTexture`, `glActiveTexture` (units 0-7), `glTexImage2D` (RGBA or RGB bytes, or `uint32_t` 0xAARRGGBB pixels, up to 4096 × 4096), `glTexParameteri` (filters and wrapping), `glGenerateMipmap`, `glDeleteTextures` |
 | Lights and fog | `glLightfv`, `glLightModelfv`, `glMaterialfv`, `glMaterialf`, `glFogi`/`glFogf`/`glFogfv` (linear, exp and exp2) |
+| Buffers (modern style) | `glGenBuffers`, `glBindBuffer` (`GL_ARRAY_BUFFER`, `GL_ELEMENT_ARRAY_BUFFER`), `glBufferData`, `glBufferSubData`, `glDeleteBuffers`, `glGenVertexArrays`, `glBindVertexArray`, `glDeleteVertexArrays`, `glVertexAttribPointer` (locations 0-7), `glEnableVertexAttribArray`/`glDisableVertexAttribArray`, `glPolygonMode` |
 | Shaders | `glCreateShader`, `glShaderSource`, `glCompileShader`, `glGetShaderiv`, `glGetShaderInfoLog`, `glDeleteShader`, `glCreateProgram`, `glAttachShader`, `glDetachShader`, `glLinkProgram`, `glGetProgramiv`, `glGetProgramInfoLog`, `kgl_glsl_program`, `kgl_hlsl_program`, `glUseProgram`, `glDeleteProgram`, `glGetUniformLocation`, `glUniform1f`-`4f`, `1i`-`4i`, the `fv`/`iv` arrays, `glUniformMatrix3fv`, `glUniformMatrix4fv` |
 
 Lighting is OpenGL's per-vertex (Gouraud) model, with ambient, diffuse and specular light, positional or directional, and no attenuation or spotlights. Textures are always combined with the colour by multiplying (`GL_MODULATE`), start out `GL_LINEAR` without mipmaps and repeating, and a unit with no texture bound reads as white. Missing are display lists, `glTexSubImage2D`, line widths, point sizes, the stencil buffer and the texture matrix. Shading is always smooth: `glShadeModel` is accepted and does nothing.
@@ -498,11 +499,24 @@ glUseProgram(p);
 
 The shaders are GLSL 4.10, the newest the Mac's OpenGL has (versions 150 to 410 work, and a source with no `#version` gets 410). How they meet the rest of OpenGL:
 
-- **Vertex inputs** come from what you give each vertex: declare `in vec4 kos_position` (`w` is 1 unless you give one), `in vec4 kos_color`, `in vec3 kos_normal` and `in vec2 kos_texcoord`, or use your own names with `layout(location = 0)` to `3` in that order.
+- **Vertex inputs**, the modern way: put vertices in a buffer, describe them with a vertex array object, and declare each input with its location, just as on the Mac:
+
+  ```c
+  glGenVertexArrays(1, &vao); glBindVertexArray(vao);
+  glGenBuffers(1, &vbo); glBindBuffer(GL_ARRAY_BUFFER, vbo);
+  glBufferData(GL_ARRAY_BUFFER, sizeof verts, verts, GL_STATIC_DRAW);
+  glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);  // layout(location = 0) in vec3 pos;
+  glEnableVertexAttribArray(0);
+  ...
+  glDrawArrays(GL_TRIANGLES, 0, 3);       // or glDrawElements with a GL_ELEMENT_ARRAY_BUFFER
+  ```
+
+  Locations 0 to 7 work, with floats or normalized/unnormalized integer types (all reaching the shader as floats), interleaved or not; `glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)` gives wireframe. There's no `glGetAttribLocation`, so give every input a `layout(location = N)`. Buffers are kept in the program's memory and each draw sends the vertices it uses, so a buffer costs nothing on the GPU, but a draw of a big buffer costs the same every frame.
+- **Vertex inputs**, the old way: with no `glVertexAttribPointer` array enabled, inputs come from `glBegin`/`glEnd` and the old arrays. Declare `in vec4 kos_position` (`w` is 1 unless you give one), `in vec4 kos_color`, `in vec3 kos_normal` and `in vec2 kos_texcoord`, or use your own names with `layout(location = 0)` to `3` in that order.
 - **Between the shaders**, outputs meet inputs by name. Write `gl_Position`, and one `out vec4` colour from the fragment shader.
 - **Uniforms and matrices** work as in any OpenGL: column-major, so `kos_mvp * kos_position`. `kos_mvp`, `kos_modelview` and `kos_projection` are filled in from the matrix stack, as for HLSL below.
 - **Textures:** a `sampler2D` reads texture unit 0 unless you point it elsewhere with `glUniform1i(glGetUniformLocation(p, "tex"), unit)`.
-- **Differences from a desktop OpenGL:** a shader is compiled on its own by `glCompileShader`, and `glAttachShader` takes a copy of its source then, so a shader can be deleted straight after. Each program is separable underneath (see How it works); the device declares the `gl_PerVertex` block that needs for you. There are no geometry, tessellation or compute shaders, and no buffer objects.
+- **Differences from a desktop OpenGL:** a shader is compiled on its own by `glCompileShader`, and `glAttachShader` takes a copy of its source then, so a shader can be deleted straight after. Each program is separable underneath (see How it works); the device declares the `gl_PerVertex` block that needs for you. There are no geometry, tessellation or compute shaders, no instancing, and no integer vertex inputs (`ivec`).
 
 #### HLSL shaders
 

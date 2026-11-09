@@ -33,10 +33,15 @@
 // kgl_glsl_program. glUseProgram it, and every draw runs through it
 // instead of the lights, fog and textures below.
 //
-// - Vertex inputs come from glVertex, glColor, glNormal and glTexCoord
-//   (or the arrays): `in vec4 kos_position` (w is 1 unless you give one),
-//   `in vec4 kos_color`, `in vec3 kos_normal` and `in vec2 kos_texcoord`,
-//   or any names with layout(location = 0 to 3) in that order.
+// - Vertex inputs come one of two ways. As in modern OpenGL: buffers and
+//   vertex array objects (glGenBuffers, glBufferData, glGenVertexArrays,
+//   glVertexAttribPointer, glEnableVertexAttribArray), feeding inputs
+//   declared with layout(location = 0 to 7). Or from glVertex, glColor,
+//   glNormal and glTexCoord (or the old arrays): `in vec4 kos_position`
+//   (w is 1 unless you give one), `in vec4 kos_color`, `in vec3
+//   kos_normal` and `in vec2 kos_texcoord`, or layout(location = 0 to 3)
+//   in that order. There's no glGetAttribLocation: give each input a
+//   location.
 // - The vertex shader's outputs and the fragment shader's inputs are
 //   matched by name. Write gl_Position, and one `out vec4` color.
 // - Uniforms are set with glGetUniformLocation and glUniform*; matrices
@@ -77,8 +82,8 @@
 //
 // ---- what's here ----
 //
-// No geometry shaders, and no buffer objects (draws send their vertices
-// each time). One context at a time (kgl_open), drawing to one canvas. Not here:
+// No geometry shaders. Buffer objects live in the program, and draws send
+// their vertices each time. One context at a time (kgl_open), drawing to one canvas. Not here:
 // display lists, glTexSubImage2D, line widths, point sizes, stencils and
 // the texture matrix. Up to 4 lights (GL_LIGHT0-3), Gouraud-shaded,
 // without attenuation or spotlights; glTexEnv is always GL_MODULATE.
@@ -103,6 +108,8 @@ typedef double GLdouble;
 typedef double GLclampd;
 typedef void GLvoid;
 typedef char GLchar;
+typedef ptrdiff_t GLsizeiptr;
+typedef ptrdiff_t GLintptr;
 
 #define GL_FALSE 0
 #define GL_TRUE 1
@@ -252,6 +259,16 @@ typedef char GLchar;
 #define GL_VERSION    0x1F02
 #define GL_SHADING_LANGUAGE_VERSION 0x8B8C
 
+// Buffer objects and glPolygonMode
+#define GL_ARRAY_BUFFER         0x8892
+#define GL_ELEMENT_ARRAY_BUFFER 0x8893
+#define GL_STREAM_DRAW          0x88E0
+#define GL_STATIC_DRAW          0x88E4
+#define GL_DYNAMIC_DRAW         0x88E8
+#define GL_POINT                0x1B00
+#define GL_LINE                 0x1B01
+#define GL_FILL                 0x1B02
+
 // Shaders and programs
 #define GL_FRAGMENT_SHADER      0x8B30
 #define GL_VERTEX_SHADER        0x8B31
@@ -368,8 +385,32 @@ void glVertexPointer(GLint size, GLenum type, GLsizei stride, const GLvoid* poin
 void glColorPointer(GLint size, GLenum type, GLsizei stride, const GLvoid* pointer);
 void glNormalPointer(GLenum type, GLsizei stride, const GLvoid* pointer);
 void glTexCoordPointer(GLint size, GLenum type, GLsizei stride, const GLvoid* pointer);
+// With any glVertexAttribPointer array enabled, these draw from those
+// (GL_POINTS to GL_TRIANGLE_FAN, as in modern OpenGL); else from the
+// arrays above. With a GL_ELEMENT_ARRAY_BUFFER bound, glDrawElements'
+// indices is an offset into it.
 void glDrawArrays(GLenum mode, GLint first, GLsizei count);
 void glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid* indices);
+
+// Buffer objects and vertex array objects, as in modern OpenGL, for
+// shaders' inputs at locations 0 to 7. Attributes may be any of GL_FLOAT,
+// GL_(UNSIGNED_)BYTE, _SHORT and _INT (normalized or not), and reach the
+// shaders as floats. Vertex array object 0 works too.
+void glGenBuffers(GLsizei n, GLuint* buffers);
+void glDeleteBuffers(GLsizei n, const GLuint* buffers);
+void glBindBuffer(GLenum target, GLuint buffer);
+void glBufferData(GLenum target, GLsizeiptr size, const GLvoid* data, GLenum usage);
+void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const GLvoid* data);
+void glGenVertexArrays(GLsizei n, GLuint* arrays);
+void glDeleteVertexArrays(GLsizei n, const GLuint* arrays);
+void glBindVertexArray(GLuint array);
+void glVertexAttribPointer(GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride,
+                           const GLvoid* pointer);
+void glEnableVertexAttribArray(GLuint index);
+void glDisableVertexAttribArray(GLuint index);
+
+// face must be GL_FRONT_AND_BACK; mode GL_FILL, GL_LINE or GL_POINT.
+void glPolygonMode(GLenum face, GLenum mode);
 
 // ---- textures --------------------------------------------------------------------------
 

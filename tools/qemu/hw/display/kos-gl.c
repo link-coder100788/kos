@@ -104,7 +104,16 @@ enum {
     CMD_SCISSOR = 22,       /* x y w h */
     CMD_COLOR_MASK = 23,    /* r g b a */
     CMD_POLYGON_OFFSET = 24, /* factor units (floats) */
+    CMD_DRAW_ATTRIBS = 25,  /* mode count layout, count vertices of the layout's floats */
+    CMD_POLYGON_MODE = 26,  /* GL_POINT, GL_LINE or GL_FILL */
 };
+
+/*
+ * CMD_DRAW_ATTRIBS's layout: nibble i is how many floats (0 to 4)
+ * attribute location i gets, for locations 0 to MAX_ATTRIBS - 1. Each
+ * vertex is its locations' floats in order.
+ */
+#define MAX_ATTRIBS 8
 
 /* CMD_UNIFORM types. Matrices come in OpenGL's column-major order. */
 enum {
@@ -235,6 +244,7 @@ typedef struct KosGLContext {
     CGLContextObj cgl;
     uint32_t width, height;
     GLuint fbo, color, depth, vao, vbo;
+    GLuint attrib_vao;      /* CMD_DRAW_ATTRIBS's, over vbo too */
     GLuint fixed;
     /* Texture 0: one white texel, on every unit nothing else is bound to. */
     GLuint white;
@@ -400,6 +410,7 @@ static KosGLContext *context_new(KosGL *s, uint32_t id, uint32_t width, uint32_t
                               (const void *)offset);
         offset += sizes[i] * sizeof(float);
     }
+    glGenVertexArrays(1, &c->attrib_vao);
 
     c->fixed = build_fixed_program();
     if (!c->fixed) {
@@ -435,6 +446,7 @@ static void context_free(gpointer data)
     glDeleteTextures(1, &c->white);
     glDeleteBuffers(1, &c->vbo);
     glDeleteVertexArrays(1, &c->vao);
+    glDeleteVertexArrays(1, &c->attrib_vao);
     glDeleteFramebuffers(1, &c->fbo);
     glDeleteRenderbuffers(1, &c->color);
     glDeleteRenderbuffers(1, &c->depth);
@@ -627,6 +639,20 @@ static void upload_program_matrices(KosGLContext *c, KosGLProgram *p)
     set_program_uniform(p, "kos_projection", UNIFORM_MAT4, 16, 1, c->state.projection);
 }
 
+/* Readies the program in use (or the fixed-function one) for a draw. */
+static void use_program(KosGLContext *c)
+{
+    if (c->current) {
+        glUseProgram(0);
+        glBindProgramPipeline(c->current->pipeline);
+        upload_program_matrices(c, c->current);
+    } else {
+        glBindProgramPipeline(0);
+        glUseProgram(c->fixed);
+        upload_fixed_state(c);
+    }
+}
+
 static bool valid_mode(uint32_t mode)
 {
     return mode <= GL_TRIANGLE_FAN;
@@ -773,6 +799,13 @@ static char *run_commands(KosGLContext *c, const uint32_t *w, size_t words)
             NEED(2);
             glPolygonOffset(as_float(a[0]), as_float(a[1]));
             break;
+        case CMD_POLYGON_MODE:
+            NEED(1);
+            if (a[0] != GL_POINT && a[0] != GL_LINE && a[0] != GL_FILL) {
+                return g_strdup_printf("bad polygon mode %#x", a[0]);
+            }
+            glPolygonMode(GL_FRONT_AND_BACK, a[0]);
+            break;
         case CMD_TEX_IMAGE: {
             NEED(5);
             uint32_t id = a[0], width = a[1], height = a[2], y0 = a[3], rows = a[4];
@@ -864,17 +897,39 @@ static char *run_commands(KosGLContext *c, const uint32_t *w, size_t words)
             if (!valid_mode(mode) || n - 2 < (size_t)count * VERTEX_FLOATS) {
                 return g_strdup_printf("bad draw (mode %u, %u vertices)", mode, count);
             }
-            if (c->current) {
-                glUseProgram(0);
-                glBindProgramPipeline(c->current->pipeline);
-                upload_program_matrices(c, c->current);
-            } else {
-                glBindProgramPipeline(0);
-                glUseProgram(c->fixed);
-                upload_fixed_state(c);
-            }
+            use_program(c);
+            glBindVertexArray(c->vao);
             glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)count * VERTEX_FLOATS * sizeof(float), &a[2],
                          GL_STREAM_DRAW);
+            glDrawArrays(mode, 0, count);
+            break;
+        }
+        case CMD_DRAW_ATTRIBS: {
+            NEED(3);
+            uint32_t mode = a[0], count = a[1], layout = a[2], floats = 0;
+            bool bad = false;
+            for (int i = 0; i < MAX_ATTRIBS; i++) {
+                uint32_t size = (layout >> (i * 4)) & 0xf;
+                bad |= size > 4;
+                floats += size;
+            }
+            if (!valid_mode(mode) || bad || floats == 0 || n - 3 < (size_t)count * floats) {
+                return g_strdup_printf("bad draw (mode %u, %u vertices, layout %#x)", mode, count, layout);
+            }
+            use_program(c);
+            glBindVertexArray(c->attrib_vao);
+            glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)count * floats * sizeof(float), &a[3], GL_STREAM_DRAW);
+            size_t offset = 0;
+            for (int i = 0; i < MAX_ATTRIBS; i++) {
+                uint32_t size = (layout >> (i * 4)) & 0xf;
+                if (size) {
+                    glEnableVertexAttribArray(i);
+                    glVertexAttribPointer(i, size, GL_FLOAT, GL_FALSE, floats * sizeof(float), (const void *)offset);
+                    offset += size * sizeof(float);
+                } else {
+                    glDisableVertexAttribArray(i);
+                }
+            }
             glDrawArrays(mode, 0, count);
             break;
         }
