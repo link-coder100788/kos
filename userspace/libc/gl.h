@@ -1,10 +1,11 @@
 #ifndef C_GL_H
 #define C_GL_H
 
-// OpenGL for canvases, drawn by the Mac's GPU, with HLSL shaders.
+// OpenGL for canvases, drawn by the Mac's GPU, with GLSL and HLSL shaders.
 //
 // It's the classic OpenGL 1.x API (glBegin/glEnd, vertex arrays, the
-// matrix stack, textures, lights, fog), plus shaders written in HLSL.
+// matrix stack, textures, lights, fog), plus shaders written in GLSL
+// (OpenGL's own shader language) or HLSL (Direct3D's).
 // Drawing needs KOS's own QEMU (tools/qemu, with its kos-gl device): run
 // KOS from KOS.app, or `make qemu` and then `make run-gui`.
 // Elsewhere kgl_open fails.
@@ -22,6 +23,31 @@
 //         glEnd();
 //         kgl_swap();                  // shows the frame in the canvas
 //     }
+//
+// ---- GLSL ----
+//
+// GLSL shaders are compiled by the Mac's OpenGL as GLSL 4.10 (the default
+// if the source has no #version; 150 to 410 work). Make a program with
+// OpenGL's glCreateShader, glShaderSource, glCompileShader,
+// glCreateProgram, glAttachShader and glLinkProgram, or in one call with
+// kgl_glsl_program. glUseProgram it, and every draw runs through it
+// instead of the lights, fog and textures below.
+//
+// - Vertex inputs come from glVertex, glColor, glNormal and glTexCoord
+//   (or the arrays): `in vec4 kos_position` (w is 1 unless you give one),
+//   `in vec4 kos_color`, `in vec3 kos_normal` and `in vec2 kos_texcoord`,
+//   or any names with layout(location = 0 to 3) in that order.
+// - The vertex shader's outputs and the fragment shader's inputs are
+//   matched by name. Write gl_Position, and one `out vec4` color.
+// - Uniforms are set with glGetUniformLocation and glUniform*; matrices
+//   are column-major, as OpenGL's always are: kos_mvp * kos_position.
+// - Declare uniform mat4 kos_mvp (projection * modelview), kos_modelview
+//   or kos_projection and they're set from the matrix stack at each draw.
+// - A sampler2D samples texture unit 0, or the unit given with
+//   glUniform1i(glGetUniformLocation(p, "name"), unit).
+// - Compile errors are in glGetShaderInfoLog (or kgl_error).
+//
+// See userspace/prog/glsl_demo.c.
 //
 // ---- HLSL ----
 //
@@ -51,7 +77,8 @@
 //
 // ---- what's here ----
 //
-// One context at a time (kgl_open), drawing to one canvas. Not here:
+// No geometry shaders, and no buffer objects (draws send their vertices
+// each time). One context at a time (kgl_open), drawing to one canvas. Not here:
 // display lists, glTexSubImage2D, line widths, point sizes, stencils and
 // the texture matrix. Up to 4 lights (GL_LIGHT0-3), Gouraud-shaded,
 // without attenuation or spotlights; glTexEnv is always GL_MODULATE.
@@ -75,6 +102,7 @@ typedef float GLclampf;
 typedef double GLdouble;
 typedef double GLclampd;
 typedef void GLvoid;
+typedef char GLchar;
 
 #define GL_FALSE 0
 #define GL_TRUE 1
@@ -222,6 +250,18 @@ typedef void GLvoid;
 #define GL_VENDOR     0x1F00
 #define GL_RENDERER   0x1F01
 #define GL_VERSION    0x1F02
+#define GL_SHADING_LANGUAGE_VERSION 0x8B8C
+
+// Shaders and programs
+#define GL_FRAGMENT_SHADER      0x8B30
+#define GL_VERTEX_SHADER        0x8B31
+#define GL_SHADER_TYPE          0x8B4F
+#define GL_DELETE_STATUS        0x8B80
+#define GL_COMPILE_STATUS       0x8B81
+#define GL_LINK_STATUS          0x8B82
+#define GL_INFO_LOG_LENGTH      0x8B84
+#define GL_ATTACHED_SHADERS     0x8B85
+#define GL_SHADER_SOURCE_LENGTH 0x8B88
 
 // ---- KOS ---------------------------------------------------------------------------
 
@@ -246,6 +286,10 @@ void kgl_close(void);
 // ps_source (the same source twice is fine). Returns the program, or 0
 // with the compiler's messages in kgl_error().
 GLuint kgl_hlsl_program(const char* vs_source, const char* vs_entry, const char* ps_source, const char* ps_entry);
+
+// Compiles and links GLSL into a program for glUseProgram, in one go.
+// Returns the program, or 0 with OpenGL's messages in kgl_error().
+GLuint kgl_glsl_program(const char* vs_source, const char* fs_source);
 
 // Why the last kgl_ call failed (or the compiler's messages).
 const char* kgl_error(void);
@@ -355,7 +399,21 @@ void glFogi(GLenum pname, GLint param);
 void glFogf(GLenum pname, GLfloat param);
 void glFogfv(GLenum pname, const GLfloat* params);
 
-// ---- programs (see HLSL at the top) ---------------------------------------------------------
+// ---- programs (see GLSL and HLSL at the top) ------------------------------------------------
+
+// glAttachShader takes a copy of the shader's source as it is then.
+GLuint glCreateShader(GLenum type);
+void glDeleteShader(GLuint shader);
+void glShaderSource(GLuint shader, GLsizei count, const GLchar* const* string, const GLint* length);
+void glCompileShader(GLuint shader);
+void glGetShaderiv(GLuint shader, GLenum pname, GLint* params);
+void glGetShaderInfoLog(GLuint shader, GLsizei max, GLsizei* length, GLchar* log);
+GLuint glCreateProgram(void);
+void glAttachShader(GLuint program, GLuint shader);
+void glDetachShader(GLuint program, GLuint shader);
+void glLinkProgram(GLuint program);
+void glGetProgramiv(GLuint program, GLenum pname, GLint* params);
+void glGetProgramInfoLog(GLuint program, GLsizei max, GLsizei* length, GLchar* log);
 
 void glUseProgram(GLuint program);
 void glDeleteProgram(GLuint program);

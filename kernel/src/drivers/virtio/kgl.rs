@@ -35,6 +35,7 @@ const REQ_CREATE: u32 = 1;
 const REQ_DESTROY: u32 = 2;
 const REQ_SUBMIT: u32 = 3;
 const REQ_HLSL: u32 = 4;
+const REQ_GLSL: u32 = 5;
 const STATUS_OK: u32 = 0;
 
 /// The biggest context, and command stream, a program can have.
@@ -195,11 +196,22 @@ pub fn submit(ctx: u32, commands: &[u8], frame: Option<&mut [u8]>) -> Result<(),
 /// request is kos-hlslc's). Ok(None) if they compiled, Ok(Some(messages))
 /// if not.
 pub fn hlsl(ctx: u32, program: u32, request_text: &[u8]) -> Result<Option<String>, String> {
+    shaders(REQ_HLSL, ctx, program, request_text)
+}
+
+/// Compiles GLSL shaders (the device's GLSL request) as program
+/// `program` of context `ctx`, or with program 0 only checks them. As
+/// `hlsl` returns.
+pub fn glsl(ctx: u32, program: u32, request_text: &[u8]) -> Result<Option<String>, String> {
+    shaders(REQ_GLSL, ctx, program, request_text)
+}
+
+fn shaders(op: u32, ctx: u32, program: u32, request_text: &[u8]) -> Result<Option<String>, String> {
     size(ctx).ok_or_else(|| String::from("no such context"))?;
     if request_text.len() > MAX_COMMANDS {
         return Err(String::from("shaders too big"));
     }
-    match request(REQ_HLSL, ctx, program, 0, request_text, MESSAGE_ROOM)? {
+    match request(op, ctx, program, 0, request_text, MESSAGE_ROOM)? {
         (STATUS_OK, _) => Ok(None),
         (_, data) => Ok(Some(message(&data))),
     }

@@ -22,7 +22,7 @@ static uint64_t gpu_svc(uint64_t sub, uint64_t a0, uint64_t a1, uint64_t a2, uin
     return KOS_SVC(18, sub, a0, a1, a2, a3, a4);
 }
 
-enum { GPU_AVAILABLE = 0, GPU_OPEN = 1, GPU_SUBMIT = 2, GPU_HLSL = 3, GPU_CLOSE = 4 };
+enum { GPU_AVAILABLE = 0, GPU_OPEN = 1, GPU_SUBMIT = 2, GPU_HLSL = 3, GPU_CLOSE = 4, GPU_GLSL = 5 };
 
 // The device's commands.
 enum {
@@ -70,6 +70,8 @@ typedef struct {
 #define MAX_UNIFORMS 256
 #define MAX_UNIFORM_NAME 63
 #define TEXTURE_UNITS 8
+#define MAX_SHADERS 32
+#define MAX_LINKABLE 32
 
 typedef struct {
     int enabled;
@@ -116,6 +118,22 @@ static struct {
         char name[MAX_UNIFORM_NAME + 1];
     } uniforms[MAX_UNIFORMS];
     int n_uniforms;
+
+    // glCreateShader's shaders (shader n is shaders[n - 1]; type 0 is a
+    // free slot), and glCreateProgram's programs (program 0 is free).
+    struct {
+        GLenum type;
+        char* source;
+        int compiled;
+        char* log;
+    } shaders[MAX_SHADERS];
+    struct {
+        GLuint program;
+        char* vs;                 // the attached shaders' sources
+        char* fs;
+        int linked;
+        char* log;
+    } linkable[MAX_LINKABLE];
 } gl;
 
 static void set_error(GLenum e) {
@@ -401,7 +419,8 @@ const GLubyte* glGetString(GLenum name) {
     switch (name) {
     case GL_VENDOR: return (const GLubyte*)"KOS";
     case GL_RENDERER: return (const GLubyte*)"kos-gl (the host's OpenGL)";
-    case GL_VERSION: return (const GLubyte*)"1.5 KOS, with HLSL";
+    case GL_VERSION: return (const GLubyte*)"1.5 KOS, with GLSL and HLSL";
+    case GL_SHADING_LANGUAGE_VERSION: return (const GLubyte*)"4.10";
     }
     set_error(GL_INVALID_ENUM);
     return NULL;
@@ -957,6 +976,213 @@ GLuint kgl_hlsl_program(const char* vs_source, const char* vs_entry, const char*
     return r == 0 ? program : 0;
 }
 
+// Sends the device a GLSL request: program `program` from vs and fs, or
+// with program 0 only a check of the ones that aren't empty. Returns 1 if
+// they compiled, or 0 with the messages in gl.message.
+static int glsl_request(GLuint program, const char* vs, const char* fs) {
+    if (!gl.ctx) { say("no context: call kgl_open first"); return 0; }
+    // What's been drawn so far goes first.
+    if (flush(0) < 0) return 0;
+    size_t vs_len = strlen(vs), fs_len = strlen(fs);
+    size_t cap = vs_len + fs_len + 64;
+    char* req = malloc(cap);
+    if (!req) { say("out of memory"); return 0; }
+    size_t len = (size_t)snprintf(req, cap, "%lu\n", (unsigned long)vs_len);
+    memcpy(req + len, vs, vs_len);
+    len += vs_len;
+    len += (size_t)snprintf(req + len, cap - len, "%lu\n", (unsigned long)fs_len);
+    memcpy(req + len, fs, fs_len);
+    len += fs_len;
+
+    gl.message[0] = '\0';
+    uint64_t r = gpu_svc(GPU_GLSL, gl.ctx | (uint64_t)program << 32, (uint64_t)req, len,
+                         (uint64_t)gl.message, sizeof gl.message);
+    free(req);
+    if (r == (uint64_t)-1) {
+        say(last_error());
+        return 0;
+    }
+    return r == 0;
+}
+
+GLuint kgl_glsl_program(const char* vs_source, const char* fs_source) {
+    GLuint program = gl.next_program + 1;
+    if (!glsl_request(program, vs_source, fs_source)) return 0;
+    gl.next_program = program;
+    return program;
+}
+
+// ---- OpenGL's shader and program objects ----------------------------------------------------
+
+static char* copy_text(const char* s) {
+    size_t n = strlen(s) + 1;
+    char* copy = malloc(n);
+    if (copy) memcpy(copy, s, n);
+    return copy;
+}
+
+static void set_log(char** log, const char* text) {
+    free(*log);
+    *log = text && *text ? copy_text(text) : NULL;
+}
+
+static int shader_slot(GLuint shader) {
+    if (shader == 0 || shader > MAX_SHADERS || !gl.shaders[shader - 1].type) return -1;
+    return (int)shader - 1;
+}
+
+static int linkable_slot(GLuint program) {
+    for (int i = 0; program && i < MAX_LINKABLE; i++)
+        if (gl.linkable[i].program == program) return i;
+    return -1;
+}
+
+GLuint glCreateShader(GLenum type) {
+    if (type != GL_VERTEX_SHADER && type != GL_FRAGMENT_SHADER) { set_error(GL_INVALID_ENUM); return 0; }
+    for (int i = 0; i < MAX_SHADERS; i++)
+        if (!gl.shaders[i].type) {
+            gl.shaders[i].type = type;
+            gl.shaders[i].compiled = 0;
+            return (GLuint)i + 1;
+        }
+    set_error(GL_OUT_OF_MEMORY);
+    return 0;
+}
+
+void glDeleteShader(GLuint shader) {
+    int i = shader_slot(shader);
+    if (i < 0) return;
+    free(gl.shaders[i].source);
+    free(gl.shaders[i].log);
+    gl.shaders[i].source = gl.shaders[i].log = NULL;
+    gl.shaders[i].type = 0;
+}
+
+void glShaderSource(GLuint shader, GLsizei count, const GLchar* const* string, const GLint* length) {
+    int i = shader_slot(shader);
+    if (i < 0) { set_error(GL_INVALID_VALUE); return; }
+    size_t total = 0;
+    for (GLsizei k = 0; k < count; k++)
+        total += length && length[k] >= 0 ? (size_t)length[k] : strlen(string[k]);
+    char* source = malloc(total + 1);
+    if (!source) { set_error(GL_OUT_OF_MEMORY); return; }
+    size_t at = 0;
+    for (GLsizei k = 0; k < count; k++) {
+        size_t n = length && length[k] >= 0 ? (size_t)length[k] : strlen(string[k]);
+        memcpy(source + at, string[k], n);
+        at += n;
+    }
+    source[at] = '\0';
+    free(gl.shaders[i].source);
+    gl.shaders[i].source = source;
+}
+
+// Compiled on the Mac, on its own (the stages are joined by glLinkProgram).
+void glCompileShader(GLuint shader) {
+    int i = shader_slot(shader);
+    if (i < 0) { set_error(GL_INVALID_VALUE); return; }
+    const char* source = gl.shaders[i].source ? gl.shaders[i].source : "";
+    int vertex = gl.shaders[i].type == GL_VERTEX_SHADER;
+    gl.shaders[i].compiled = glsl_request(0, vertex ? source : "", vertex ? "" : source);
+    set_log(&gl.shaders[i].log, gl.shaders[i].compiled ? NULL : gl.message);
+}
+
+void glGetShaderiv(GLuint shader, GLenum pname, GLint* params) {
+    int i = shader_slot(shader);
+    if (i < 0) { set_error(GL_INVALID_VALUE); return; }
+    switch (pname) {
+    case GL_SHADER_TYPE: *params = (GLint)gl.shaders[i].type; break;
+    case GL_COMPILE_STATUS: *params = gl.shaders[i].compiled; break;
+    case GL_DELETE_STATUS: *params = GL_FALSE; break;
+    case GL_INFO_LOG_LENGTH: *params = gl.shaders[i].log ? (GLint)strlen(gl.shaders[i].log) + 1 : 0; break;
+    case GL_SHADER_SOURCE_LENGTH:
+        *params = gl.shaders[i].source ? (GLint)strlen(gl.shaders[i].source) + 1 : 0;
+        break;
+    default: set_error(GL_INVALID_ENUM);
+    }
+}
+
+static void copy_log(const char* log, GLsizei max, GLsizei* length, GLchar* out) {
+    size_t n = log ? strlen(log) : 0;
+    if (max <= 0) { if (length) *length = 0; return; }
+    if (n > (size_t)max - 1) n = (size_t)max - 1;
+    memcpy(out, log ? log : "", n);
+    out[n] = '\0';
+    if (length) *length = (GLsizei)n;
+}
+
+void glGetShaderInfoLog(GLuint shader, GLsizei max, GLsizei* length, GLchar* log) {
+    int i = shader_slot(shader);
+    if (i < 0) { set_error(GL_INVALID_VALUE); return; }
+    copy_log(gl.shaders[i].log, max, length, log);
+}
+
+GLuint glCreateProgram(void) {
+    for (int i = 0; i < MAX_LINKABLE; i++)
+        if (!gl.linkable[i].program) {
+            gl.linkable[i].program = ++gl.next_program;
+            gl.linkable[i].linked = 0;
+            return gl.linkable[i].program;
+        }
+    set_error(GL_OUT_OF_MEMORY);
+    return 0;
+}
+
+// Takes a copy of the shader's source as it is now.
+void glAttachShader(GLuint program, GLuint shader) {
+    int p = linkable_slot(program), i = shader_slot(shader);
+    if (p < 0 || i < 0) { set_error(GL_INVALID_VALUE); return; }
+    char** stage = gl.shaders[i].type == GL_VERTEX_SHADER ? &gl.linkable[p].vs : &gl.linkable[p].fs;
+    if (*stage) { set_error(GL_INVALID_OPERATION); return; }
+    *stage = copy_text(gl.shaders[i].source ? gl.shaders[i].source : "");
+}
+
+void glDetachShader(GLuint program, GLuint shader) {
+    int p = linkable_slot(program), i = shader_slot(shader);
+    if (p < 0 || i < 0) { set_error(GL_INVALID_VALUE); return; }
+    char** stage = gl.shaders[i].type == GL_VERTEX_SHADER ? &gl.linkable[p].vs : &gl.linkable[p].fs;
+    free(*stage);
+    *stage = NULL;
+}
+
+void glLinkProgram(GLuint program) {
+    int p = linkable_slot(program);
+    if (p < 0) { set_error(GL_INVALID_VALUE); return; }
+    if (!gl.linkable[p].vs || !gl.linkable[p].fs) {
+        gl.linkable[p].linked = 0;
+        set_log(&gl.linkable[p].log, "a program needs a vertex shader and a fragment shader");
+        return;
+    }
+    gl.linkable[p].linked = glsl_request(program, gl.linkable[p].vs, gl.linkable[p].fs);
+    set_log(&gl.linkable[p].log, gl.linkable[p].linked ? NULL : gl.message);
+}
+
+void glGetProgramiv(GLuint program, GLenum pname, GLint* params) {
+    int p = linkable_slot(program);
+    if (p < 0) { set_error(GL_INVALID_VALUE); return; }
+    switch (pname) {
+    case GL_LINK_STATUS: *params = gl.linkable[p].linked; break;
+    case GL_DELETE_STATUS: *params = GL_FALSE; break;
+    case GL_ATTACHED_SHADERS: *params = !!gl.linkable[p].vs + !!gl.linkable[p].fs; break;
+    case GL_INFO_LOG_LENGTH: *params = gl.linkable[p].log ? (GLint)strlen(gl.linkable[p].log) + 1 : 0; break;
+    default: set_error(GL_INVALID_ENUM);
+    }
+}
+
+void glGetProgramInfoLog(GLuint program, GLsizei max, GLsizei* length, GLchar* log) {
+    int p = linkable_slot(program);
+    if (p < 0) { set_error(GL_INVALID_VALUE); return; }
+    copy_log(gl.linkable[p].log, max, length, log);
+}
+
+static void free_linkable(int p) {
+    free(gl.linkable[p].vs);
+    free(gl.linkable[p].fs);
+    free(gl.linkable[p].log);
+    gl.linkable[p].vs = gl.linkable[p].fs = gl.linkable[p].log = NULL;
+    gl.linkable[p].program = 0;
+}
+
 void glUseProgram(GLuint program) {
     gl.program = program;
     command(CMD_USE_PROGRAM, 1, program, 0, 0, 0);
@@ -964,6 +1190,8 @@ void glUseProgram(GLuint program) {
 
 void glDeleteProgram(GLuint program) {
     if (!program) return;
+    int p = linkable_slot(program);
+    if (p >= 0) free_linkable(p);
     if (gl.program == program) gl.program = 0;
     command(CMD_PROGRAM_DELETE, 1, program, 0, 0, 0);
 }
@@ -1076,6 +1304,8 @@ void kgl_close(void) {
     gl.cmds = NULL;
     gl.verts = NULL;
     gl.len = gl.cap = gl.nverts = gl.verts_cap = 0;
+    for (GLuint i = 1; i <= MAX_SHADERS; i++) glDeleteShader(i);
+    for (int p = 0; p < MAX_LINKABLE; p++) free_linkable(p);
 }
 
 const char* kgl_error(void) {

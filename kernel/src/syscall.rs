@@ -1107,8 +1107,9 @@ mod gpu {
     pub const SUBMIT: u64 = 2;    // (context, commands, len, frame or 0) -> 0
     pub const HLSL: u64 = 3;      // (context | program << 32, request, len, log, log_max) -> 0, or 1 with the log
     pub const CLOSE: u64 = 4;     // (context)
+    pub const GLSL: u64 = 5;      // as HLSL; program 0 only checks the shaders
 
-    const_unique!(AVAILABLE, OPEN, SUBMIT, HLSL, CLOSE);
+    const_unique!(AVAILABLE, OPEN, SUBMIT, HLSL, CLOSE, GLSL);
 }
 
 /// GL contexts on the host's GPU, for gl.h (see drivers/virtio/kgl.rs).
@@ -1136,8 +1137,12 @@ pub fn syscall_gpu(frame: &mut SyscallContext) {
             (None, _) => Err("bad commands".to_string()),
             (_, None) => Err("no such context".to_string()),
         },
-        gpu::HLSL => match user_bytes(frame, frame[1], frame[2]) {
-            Some(request) => kgl::hlsl(ctx, (frame[0] >> 32) as u32, request).and_then(|log| match log {
+        gpu::HLSL | gpu::GLSL => match user_bytes(frame, frame[1], frame[2]) {
+            Some(request) => match frame[16] {
+                gpu::HLSL => kgl::hlsl(ctx, (frame[0] >> 32) as u32, request),
+                _ => kgl::glsl(ctx, (frame[0] >> 32) as u32, request),
+            }
+            .and_then(|log| match log {
                 None => Ok(0),
                 Some(log) => {
                     // NUL-terminated, cut short if it doesn't fit.

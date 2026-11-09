@@ -24,7 +24,7 @@ On Linux, install `qemu-system-aarch64` (often in a `qemu-system-arm` package), 
 
 **Quitting:** close the QEMU window, or press `Ctrl-A` then `X` in the terminal.
 
-**KOS's own QEMU:** `make qemu` builds the QEMU vendored in `tools/qemu`, which adds a device that lets programs draw with the Mac's GPU, in OpenGL with HLSL shaders (see [3D on the GPU](#3d-on-the-gpu)). It needs `brew install ninja cmake` too, and takes a few minutes the first time. Once it's built, `make run-gui` uses it.
+**KOS's own QEMU:** `make qemu` builds the QEMU vendored in `tools/qemu`, which adds a device that lets programs draw with the Mac's GPU, in OpenGL with GLSL or HLSL shaders (see [3D on the GPU](#3d-on-the-gpu)). It needs `brew install ninja cmake` too, and takes a few minutes the first time. Once it's built, `make run-gui` uses it.
 
 ### As a Mac app
 
@@ -279,7 +279,7 @@ Programs are freestanding: they start at `_start`, must call `exit(status)` (0 f
 | `crypto.h` | SHA-256, SHA-512, HMAC-SHA256 and AES-256-GCM, done by the kernel; `crypto_equal` for comparing MACs; X25519, Ed25519 and base64 |
 | `canvas.h` | Windows you draw pixels into, for graphics and games |
 | `render3d.h` | A software 3D renderer for canvases: a camera, shapes, terrain, lighting and fog, with a depth buffer |
-| `gl.h` | OpenGL 1.x for canvases, drawn by the Mac's GPU, with HLSL shaders (needs KOS's own QEMU) |
+| `gl.h` | OpenGL 1.x for canvases, drawn by the Mac's GPU, with GLSL and HLSL shaders (needs KOS's own QEMU) |
 
 See `userspace/prog/ui_demo.c` for a program with a window.
 
@@ -389,7 +389,7 @@ For graphics and games, `userspace/libc/canvas.h` gives a program a window it dr
 
 For 3D, `userspace/libc/render3d.h` draws onto a canvas. Set a camera (`r3d_look_at`), then between `r3d_begin` and `r3d_end` place boxes, cones, cylinders, spheres, your own meshes, lines and heightfield terrain, moved by a model transform with push and pop for models made of parts. It does the perspective, clipping, flat shading by a sun, fog and the depth buffer, at a fraction of the window's size for chunky pixels (optionally with CRT scanlines), and `r3d_project` puts labels on things. `demo3d` is a scene to fly round with one of everything in it, and Powder Run (`games/powder/`) is a game built on it.
 
-For 3D drawn by the Mac's GPU instead, with your own shaders in HLSL, see [3D on the GPU](#3d-on-the-gpu).
+For 3D drawn by the Mac's GPU instead, with your own shaders in GLSL or HLSL, see [3D on the GPU](#3d-on-the-gpu).
 
 Assembly (`.s`) files in `userspace/prog/` work the same way.
 
@@ -399,9 +399,9 @@ Assembly (`.s`) files in `userspace/prog/` work the same way.
 
 ### 3D on the GPU
 
-KOS programs can draw 3D with the Mac's graphics card. `userspace/libc/gl.h` is OpenGL for canvases: the classic OpenGL 1.x API (`glBegin`/`glEnd`, vertex arrays, the matrix stack, textures, lights, fog, blending), plus vertex and pixel shaders written in HLSL, Direct3D's shading language. The program draws into an ordinary canvas window, which moves, overlaps and closes like any other; only the drawing inside it happens on the GPU.
+KOS programs can draw 3D with the Mac's graphics card. `userspace/libc/gl.h` is OpenGL for canvases: the classic OpenGL 1.x API (`glBegin`/`glEnd`, vertex arrays, the matrix stack, textures, lights, fog, blending), plus vertex and fragment (pixel) shaders written in GLSL, OpenGL's own shading language, or in HLSL, Direct3D's. The program draws into an ordinary canvas window, which moves, overlaps and closes like any other; only the drawing inside it happens on the GPU.
 
-Try `hlsl_demo` (its source is `userspace/prog/hlsl_demo.c`): a cube shaded by HLSL, with a texture, lighting and colours that shift over time, spinning above a floor lit and fogged by plain OpenGL. Space pauses it, and `q` quits and prints how many frames it drew.
+Try `glsl_demo` or `hlsl_demo` (their sources are in `userspace/prog/`): the same cube shaded by GLSL or by HLSL, with a texture, lighting and colours that shift over time, spinning above a floor lit and fogged by plain OpenGL. Space pauses it, and `q` quits and prints how many frames it drew.
 
 #### What you need
 
@@ -454,9 +454,55 @@ It's OpenGL 1.x as the old tutorials teach it:
 | Vertices | `glBegin`/`glEnd` with `glVertex`, `glColor`, `glNormal` and `glTexCoord`, every primitive including quads, quad strips and polygons; vertex arrays (`glVertexPointer`, `glColorPointer`, `glNormalPointer`, `glTexCoordPointer`) drawn with `glDrawArrays` or `glDrawElements` |
 | Textures | `glGenTextures`, `glBindTexture`, `glActiveTexture` (units 0-7), `glTexImage2D` (RGBA or RGB bytes, or `uint32_t` 0xAARRGGBB pixels, up to 4096 × 4096), `glTexParameteri` (filters and wrapping), `glGenerateMipmap`, `glDeleteTextures` |
 | Lights and fog | `glLightfv`, `glLightModelfv`, `glMaterialfv`, `glMaterialf`, `glFogi`/`glFogf`/`glFogfv` (linear, exp and exp2) |
-| Shaders | `kgl_hlsl_program`, `glUseProgram`, `glDeleteProgram`, `glGetUniformLocation`, `glUniform1f`-`4f`, `1i`-`4i`, the `fv`/`iv` arrays, `glUniformMatrix3fv`, `glUniformMatrix4fv` |
+| Shaders | `glCreateShader`, `glShaderSource`, `glCompileShader`, `glGetShaderiv`, `glGetShaderInfoLog`, `glDeleteShader`, `glCreateProgram`, `glAttachShader`, `glDetachShader`, `glLinkProgram`, `glGetProgramiv`, `glGetProgramInfoLog`, `kgl_glsl_program`, `kgl_hlsl_program`, `glUseProgram`, `glDeleteProgram`, `glGetUniformLocation`, `glUniform1f`-`4f`, `1i`-`4i`, the `fv`/`iv` arrays, `glUniformMatrix3fv`, `glUniformMatrix4fv` |
 
 Lighting is OpenGL's per-vertex (Gouraud) model, with ambient, diffuse and specular light, positional or directional, and no attenuation or spotlights. Textures are always combined with the colour by multiplying (`GL_MODULATE`), start out `GL_LINEAR` without mipmaps and repeating, and a unit with no texture bound reads as white. Missing are display lists, `glTexSubImage2D`, line widths, point sizes, the stencil buffer and the texture matrix. Shading is always smooth: `glShadeModel` is accepted and does nothing.
+
+#### GLSL shaders
+
+GLSL is OpenGL's own shading language, and the shaders are made the usual OpenGL way:
+
+```glsl
+// vertex shader
+#version 410
+uniform mat4 kos_mvp;        // filled in from the matrix stack at every draw
+in vec4 kos_position;
+in vec2 kos_texcoord;
+out vec2 uv;
+void main() { gl_Position = kos_mvp * kos_position; uv = kos_texcoord; }
+```
+
+```glsl
+// fragment shader
+#version 410
+uniform float time;          // set with glUniform1f
+uniform sampler2D tex;       // texture unit 0
+in vec2 uv;
+out vec4 color;
+void main() { color = texture(tex, uv + vec2(time, 0)); }
+```
+
+```c
+GLuint vs = glCreateShader(GL_VERTEX_SHADER);
+glShaderSource(vs, 1, &vs_source, NULL);
+glCompileShader(vs);                    // check GL_COMPILE_STATUS and glGetShaderInfoLog
+... the same for the fragment shader ...
+GLuint p = glCreateProgram();
+glAttachShader(p, vs);
+glAttachShader(p, fs);
+glLinkProgram(p);                       // check GL_LINK_STATUS and glGetProgramInfoLog
+glUseProgram(p);
+```
+
+`kgl_glsl_program(vs_source, fs_source)` does all of that in one call, returning 0 with the messages in `kgl_error()` if something didn't compile. `glsl_demo` uses the long way.
+
+The shaders are GLSL 4.10, the newest the Mac's OpenGL has (versions 150 to 410 work, and a source with no `#version` gets 410). How they meet the rest of OpenGL:
+
+- **Vertex inputs** come from what you give each vertex: declare `in vec4 kos_position` (`w` is 1 unless you give one), `in vec4 kos_color`, `in vec3 kos_normal` and `in vec2 kos_texcoord`, or use your own names with `layout(location = 0)` to `3` in that order.
+- **Between the shaders**, outputs meet inputs by name. Write `gl_Position`, and one `out vec4` colour from the fragment shader.
+- **Uniforms and matrices** work as in any OpenGL: column-major, so `kos_mvp * kos_position`. `kos_mvp`, `kos_modelview` and `kos_projection` are filled in from the matrix stack, as for HLSL below.
+- **Textures:** a `sampler2D` reads texture unit 0 unless you point it elsewhere with `glUniform1i(glGetUniformLocation(p, "tex"), unit)`.
+- **Differences from a desktop OpenGL:** a shader is compiled on its own by `glCompileShader`, and `glAttachShader` takes a copy of its source then, so a shader can be deleted straight after. Each program is separable underneath (see How it works); the device declares the `gl_PerVertex` block that needs for you. There are no geometry, tessellation or compute shaders, and no buffer objects.
 
 #### HLSL shaders
 
@@ -515,8 +561,8 @@ There are four pieces, from the program down to the Mac:
 
 1. **The library** (`userspace/libc/gl.c`) keeps all of OpenGL's state in the program: the matrix stacks, the current colour, normal and texture coordinate, the lights, fog and enables. Drawing calls add commands to a buffer instead of doing anything right away. Each draw carries its own vertices, 13 floats apiece (position, colour, normal, texture coordinate), with quads, quad strips and polygons turned into triangles first, since the GPU side has no quads. The state the fixed-function pipeline needs is one command, sent before a draw whenever it has changed. The buffer goes to the kernel when the frame is done (`kgl_swap`), when it reaches 4 MiB, before compiling a shader, and on `glFlush`. Big draws and textures are split so no single command is too big for the kernel.
 2. **The kernel** (`kernel/src/drivers/virtio/kgl.rs`, behind syscall 18) carries the commands without looking inside them. It knows which program opened which context, so a program can only use its own, and closes a program's contexts when it ends. It sends one request at a time to the device and puts the caller to sleep until the device's interrupt says it's done. When the request asks for the frame, the finished picture is copied into the canvas's pixels.
-3. **The device** (`tools/qemu/hw/display/kos-gl.c`) is a virtio device that exists only in KOS's QEMU (virtio id 63, unregistered). It's where the drawing happens, with macOS's OpenGL 4.1 (OpenGL.framework). Each KOS context gets its own OpenGL context, rendering offscreen into a framebuffer the size of the canvas, with a depth buffer. Commands become OpenGL calls; plain-OpenGL draws go through a built-in shader that does the old fixed-function lighting, texturing, fog and alpha test; and every command is checked first, so a bad one stops its request with an error instead of upsetting anything else. After a frame, the device reads the picture back (flipping it, since OpenGL's rows go bottom to top) for the kernel to hand to the program.
-4. **The HLSL compiler** (`tools/kos-hlslc`) is a small program that QEMU runs next to itself whenever a shader is compiled. glslang (`tools/glslang`) turns the HLSL into SPIR-V, and SPIRV-Cross (`tools/spirv-cross`) turns that into GLSL, which OpenGL compiles. On the way, it gives the vertex inputs the slots the device feeds (`POSITION` 0, `COLOR` 1, `NORMAL` 2, `TEXCOORD0` 3), lines the two shaders' semantics up, and names each texture sampler after its register (`kos_t2_s0`) so the device knows which unit it reads. Each shader becomes a separate OpenGL program, joined in a program pipeline, so the two shaders never have to agree about their uniforms. The device finds uniforms by name, and transposes matrices on the way in, since HLSL's `mul(m, v)` becomes `v * m` in GLSL.
+3. **The device** (`tools/qemu/hw/display/kos-gl.c`) is a virtio device that exists only in KOS's QEMU (virtio id 63, unregistered). It's where the drawing happens, with macOS's OpenGL 4.1 (OpenGL.framework). Each KOS context gets its own OpenGL context, rendering offscreen into a framebuffer the size of the canvas, with a depth buffer. Commands become OpenGL calls; plain-OpenGL draws go through a built-in shader that does the old fixed-function lighting, texturing, fog and alpha test; and every command is checked first, so a bad one stops its request with an error instead of upsetting anything else. After a frame, the device reads the picture back (flipping it, since OpenGL's rows go bottom to top) for the kernel to hand to the program. GLSL shaders go straight to OpenGL: the device adds a `#version` if there's none and declares `gl_PerVertex` for vertex shaders (separable programs must, on the Mac), with a `#line` so error line numbers stay the program's own, and binds the `kos_` input names to the slots it feeds.
+4. **The HLSL compiler** (`tools/kos-hlslc`) is a small program that QEMU runs next to itself whenever a shader is compiled. glslang (`tools/glslang`) turns the HLSL into SPIR-V, and SPIRV-Cross (`tools/spirv-cross`) turns that into GLSL, which OpenGL compiles. On the way, it gives the vertex inputs the slots the device feeds (`POSITION` 0, `COLOR` 1, `NORMAL` 2, `TEXCOORD0` 3), lines the two shaders' semantics up, and names each texture sampler after its register (`kos_t2_s0`) so the device knows which unit it reads. Each shader becomes a separate OpenGL program, joined in a program pipeline, so the two shaders never have to agree about their uniforms. The device finds uniforms by name, and transposes an HLSL program's matrices on the way in, since HLSL's `mul(m, v)` becomes `v * m` in GLSL (a GLSL program's are left as they are).
 
 A 640 × 480 frame is about 1.2 MB of pixels copied back, plus its vertices going the other way. On an Apple silicon Mac, `hlsl_demo` runs at about 90 frames a second, held back mostly by its own 10 ms sleep.
 

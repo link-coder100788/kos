@@ -10,7 +10,7 @@
  * the size of the program's canvas, and the finished frame is read back
  * into the canvas's pixels. HLSL shaders are compiled by kos-hlslc
  * (tools/kos-hlslc), which runs next to QEMU, into GLSL for separable
- * programs joined in a program pipeline.
+ * programs joined in a program pipeline; GLSL shaders go straight there.
  *
  * Requests (one queue): a device-readable struct KosGLRequest and payload,
  * then a device-writable struct KosGLResponse and room for its data.
@@ -21,6 +21,9 @@
  *           the response data (width * height 0x00RRGGBB, top row first)
  *   HLSL    ctx, a = program id, payload = kos-hlslc's request; the
  *           response data is the compiler's messages if it fails
+ *   GLSL    ctx, a = program id, payload = "<length>\n<vertex shader>"
+ *           then the same for the fragment shader; messages as for HLSL.
+ *           With a = 0 it only compiles the stages that aren't empty.
  *
  * A failed request has status 1 and an error message as its data.
  *
@@ -60,6 +63,7 @@ enum {
     REQ_DESTROY = 2,
     REQ_SUBMIT = 3,
     REQ_HLSL = 4,
+    REQ_GLSL = 5,
 };
 
 enum {
@@ -222,6 +226,7 @@ typedef struct KosGLUniform {
 
 typedef struct KosGLProgram {
     GLuint pipeline, vs, ps;
+    bool hlsl;              /* its matrices are transposed (see set_uniform) */
     GHashTable *uniforms;   /* name -> KosGLUniform* */
 } KosGLProgram;
 
@@ -487,9 +492,12 @@ static KosGLUniform *program_uniform(KosGLProgram *p, const char *name)
     return u;
 }
 
-/* Matrices are transposed on the way in: HLSL's mul(m, v) becomes v * m in GLSL. */
+/*
+ * An HLSL program's matrices are transposed on the way in: HLSL's
+ * mul(m, v) becomes v * m in GLSL. A GLSL program's are as given.
+ */
 static void set_uniform(GLuint program, GLint loc, uint32_t type, uint32_t components, GLsizei count,
-                        const void *values)
+                        const void *values, bool transpose)
 {
     if (loc < 0) {
         return;
@@ -512,10 +520,10 @@ static void set_uniform(GLuint program, GLint loc, uint32_t type, uint32_t compo
         }
         break;
     case UNIFORM_MAT3:
-        glProgramUniformMatrix3fv(program, loc, count, GL_TRUE, values);
+        glProgramUniformMatrix3fv(program, loc, count, transpose, values);
         break;
     case UNIFORM_MAT4:
-        glProgramUniformMatrix4fv(program, loc, count, GL_TRUE, values);
+        glProgramUniformMatrix4fv(program, loc, count, transpose, values);
         break;
     }
 }
@@ -524,8 +532,8 @@ static void set_program_uniform(KosGLProgram *p, const char *name, uint32_t type
                                 GLsizei count, const void *values)
 {
     KosGLUniform *u = program_uniform(p, name);
-    set_uniform(p->vs, u->vs, type, components, count, values);
-    set_uniform(p->ps, u->ps, type, components, count, values);
+    set_uniform(p->vs, u->vs, type, components, count, values, p->hlsl);
+    set_uniform(p->ps, u->ps, type, components, count, values, p->hlsl);
 }
 
 /* ---- drawing ------------------------------------------------------------------- */
@@ -609,7 +617,7 @@ static void upload_fixed_state(KosGLContext *c)
     glProgramUniform1f(p, l->alpha_ref, s->alpha_ref);
 }
 
-/* Gives an HLSL program the fixed-function matrices, if it declares them. */
+/* Gives a program the fixed-function matrices, if it declares them. */
 static void upload_program_matrices(KosGLContext *c, KosGLProgram *p)
 {
     float mvp[16];
@@ -902,18 +910,86 @@ static void read_frame(KosGLContext *c, uint32_t *out)
     }
 }
 
-/* ---- HLSL ---------------------------------------------------------------------- */
+/* ---- programs ------------------------------------------------------------------ */
 
-static GLuint separable_program(GLenum stage, const char *source, GString *log)
+/*
+ * A GLSL program's source as compiled: given #version 410 (the newest the
+ * Mac has) if it has none, and for a vertex shader, the gl_PerVertex
+ * block that separable programs must redeclare, after the leading
+ * #version and #extension lines (and blank and // comment lines). #line keeps the messages' line numbers
+ * the program's own.
+ */
+static char *glsl_source(GLenum stage, const char *source)
 {
-    GLuint program = glCreateShaderProgramv(stage, 1, &source);
+    GString *out = g_string_new(NULL);
+    const char *p = source;
+    int line = 1;
+
+    if (!strstr(source, "#version")) {
+        g_string_append(out, "#version 410\n");
+    }
+    while (*p) {
+        const char *q = p;
+        while (*q == ' ' || *q == '\t') {
+            q++;
+        }
+        if (*q != '#' && *q != '\n' && *q != '\r' && !(q[0] == '/' && q[1] == '/')) {
+            break;
+        }
+        const char *nl = strchr(p, '\n');
+        const char *next = nl ? nl + 1 : p + strlen(p);
+        g_string_append_len(out, p, next - p);
+        if (!nl) {
+            g_string_append_c(out, '\n');
+        }
+        p = next;
+        line++;
+    }
+    if (stage == GL_VERTEX_SHADER && !strstr(source, "gl_PerVertex")) {
+        g_string_append(out, "out gl_PerVertex { vec4 gl_Position; float gl_PointSize; float gl_ClipDistance[]; };\n");
+    }
+    g_string_append_printf(out, "#line %d\n%s", line, p);
+    return g_string_free(out, false);
+}
+
+/*
+ * One stage's separable program. Vertex inputs named kos_position,
+ * kos_color, kos_normal and kos_texcoord get the attribute locations the
+ * vertices are fed from (kos-hlslc's HLSL output, and GLSL with its own
+ * layout(location = N), set them itself).
+ */
+static GLuint separable_program(GLenum stage, const char *source, bool hlsl, GString *log)
+{
+    g_autofree char *text = hlsl ? g_strdup(source) : glsl_source(stage, source);
+    const char *texts[] = { text };
+    GLuint shader = glCreateShader(stage);
     GLint ok = 0;
+    char buf[4096];
+
+    glShaderSource(shader, 1, texts, NULL);
+    glCompileShader(shader);
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
+    const char *what = stage == GL_VERTEX_SHADER ? "vertex shader" : hlsl ? "pixel shader" : "fragment shader";
+    if (!ok) {
+        glGetShaderInfoLog(shader, sizeof buf, NULL, buf);
+        g_string_append_printf(log, "%s%s: %s", what, hlsl ? " (as GLSL)" : "", buf);
+        glDeleteShader(shader);
+        return 0;
+    }
+    GLuint program = glCreateProgram();
+    glProgramParameteri(program, GL_PROGRAM_SEPARABLE, GL_TRUE);
+    glBindAttribLocation(program, 0, "kos_position");
+    glBindAttribLocation(program, 1, "kos_color");
+    glBindAttribLocation(program, 2, "kos_normal");
+    glBindAttribLocation(program, 3, "kos_texcoord");
+    glAttachShader(program, shader);
+    glLinkProgram(program);
+    glDetachShader(program, shader);
+    glDeleteShader(shader);
     glGetProgramiv(program, GL_LINK_STATUS, &ok);
     if (!ok) {
-        char buf[4096];
         glGetProgramInfoLog(program, sizeof buf, NULL, buf);
-        g_string_append_printf(log, "%s shader (as GLSL): %s", stage == GL_VERTEX_SHADER ? "vertex" : "pixel",
-                               buf);
+        g_string_append_printf(log, "%s%s: %s", what, hlsl ? " (as GLSL)" : "", buf);
         glDeleteProgram(program);
         return 0;
     }
@@ -937,7 +1013,7 @@ static void bind_samplers(GLuint program)
     }
 }
 
-/* Takes the next "<length>\n<bytes>" block of kos-hlslc's output. */
+/* Takes the next "<length>\n<bytes>" block (of kos-hlslc's output, or a GLSL request). */
 static char *take_block(const char **p, const char *end)
 {
     char *nl = memchr(*p, '\n', end - *p);
@@ -952,6 +1028,8 @@ static char *take_block(const char **p, const char *end)
     *p = nl + 1 + len;
     return block;
 }
+
+static char *add_program(KosGLContext *c, uint32_t id, const char *vs_glsl, const char *ps_glsl, bool hlsl);
 
 /*
  * Compiles an HLSL program as program `id`. Returns NULL, or the
@@ -987,9 +1065,41 @@ static char *compile_hlsl(KosGL *s, KosGLContext *c, uint32_t id, const void *re
         return g_strdup("the HLSL compiler's answer was cut short");
     }
 
+    return add_program(c, id, vs_glsl, ps_glsl, true);
+}
+
+/*
+ * Compiles GLSL as program `id`, or with id 0 only checks the stages
+ * given. Returns NULL, or OpenGL's messages.
+ */
+static char *compile_glsl(KosGLContext *c, uint32_t id, const char *request, size_t len)
+{
+    const char *p = request, *end = request + len;
+    g_autofree char *vs_glsl = take_block(&p, end);
+    g_autofree char *fs_glsl = vs_glsl ? take_block(&p, end) : NULL;
+    if (!fs_glsl) {
+        return g_strdup("the shaders were cut short");
+    }
+    if (id) {
+        return add_program(c, id, vs_glsl, fs_glsl, false);
+    }
     g_autoptr(GString) log = g_string_new(NULL);
-    GLuint vs = separable_program(GL_VERTEX_SHADER, vs_glsl, log);
-    GLuint ps = separable_program(GL_FRAGMENT_SHADER, ps_glsl, log);
+    GLuint vs = *vs_glsl ? separable_program(GL_VERTEX_SHADER, vs_glsl, false, log) : 0;
+    GLuint fs = *fs_glsl ? separable_program(GL_FRAGMENT_SHADER, fs_glsl, false, log) : 0;
+    glDeleteProgram(vs);
+    glDeleteProgram(fs);
+    return log->len ? g_string_free(g_steal_pointer(&log), false) : NULL;
+}
+
+/*
+ * Makes program `id` from a vertex and a fragment shader in GLSL (from
+ * HLSL if `hlsl`). Returns NULL, or OpenGL's messages.
+ */
+static char *add_program(KosGLContext *c, uint32_t id, const char *vs_glsl, const char *ps_glsl, bool hlsl)
+{
+    g_autoptr(GString) log = g_string_new(NULL);
+    GLuint vs = separable_program(GL_VERTEX_SHADER, vs_glsl, hlsl, log);
+    GLuint ps = separable_program(GL_FRAGMENT_SHADER, ps_glsl, hlsl, log);
     if (!vs || !ps) {
         glDeleteProgram(vs);
         glDeleteProgram(ps);
@@ -998,6 +1108,7 @@ static char *compile_hlsl(KosGL *s, KosGLContext *c, uint32_t id, const void *re
     KosGLProgram *program = g_new0(KosGLProgram, 1);
     program->vs = vs;
     program->ps = ps;
+    program->hlsl = hlsl;
     program->uniforms = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
     glGenProgramPipelines(1, &program->pipeline);
     glUseProgramStages(program->pipeline, GL_VERTEX_SHADER_BIT, vs);
@@ -1084,6 +1195,15 @@ static void handle_request(KosGL *s, const KosGLRequest *req, const void *payloa
     case REQ_HLSL: {
         CGLSetCurrentContext(c->cgl);
         char *error = req->a ? compile_hlsl(s, c, req->a, payload, len) : g_strdup("program 0");
+        if (error) {
+            reply_error(r, error);
+        }
+        CGLSetCurrentContext(NULL);
+        break;
+    }
+    case REQ_GLSL: {
+        CGLSetCurrentContext(c->cgl);
+        char *error = compile_glsl(c, req->a, payload, len);
         if (error) {
             reply_error(r, error);
         }
