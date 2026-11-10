@@ -14,6 +14,7 @@
 #   make test       build with the in-kernel test suite, boot it, and exit 0
 #                   if every test passed (the log is in build/test.log)
 #   make user       build the userspace example programs into build/user/
+#   make libc       build the C library into a static library, build/libc.a
 #   make games      build every game in games/ into build/user/games/
 #   make tcc-libs   build the libraries programs compiled by tcc link with
 #                   (build/tcc-libs/libkos.a and libtcc1.a)
@@ -105,7 +106,7 @@ QEMU = $(QEMU_BIN) \
 	-rtc base=utc -fw_cfg name=opt/kos/utc_offset,string=$(UTC_OFFSET) \
 	$(if $(LOG),-fw_cfg name=opt/kos/log$(comma)string=$(subst $(comma),$(comma)$(comma),$(LOG)))
 
-.PHONY: all kernel kos run run-gui debug lldb test doc package qemu user games tcc-libs tcc-progs tcc-kos tcc-disk disk kai kai-setup kai-train kai-upload digit-setup digit-train digit-upload clean FORCE
+.PHONY: all kernel kos run run-gui debug lldb test doc package qemu user libc games tcc-libs tcc-progs tcc-kos tcc-disk disk kai kai-setup kai-train kai-upload digit-setup digit-train digit-upload clean FORCE
 
 all: kos
 
@@ -251,6 +252,28 @@ $(CMD_OUT)/disk/bin/%.elf.b64: $(CMD_OUT)/%.elf | $(CMD_OUT)/disk/bin
 	rust-objcopy --strip-debug $< $@.tmp
 	base64 < $@.tmp | tr -d '\n' > $@
 	rm $@.tmp
+
+# ---- libc.a -------------------------------------------------------------
+# The C library as a static library, for programs built outside this
+# Makefile: link with build/libc.a and -I userspace/libc. Built like the
+# programs (PIE, debug info), with rust-ar (llvm-ar), which writes the
+# archive format lld expects; macOS's ar writes another.
+
+LIBC_OUT  := $(BUILD)/libc
+LIBC_OBJS := $(patsubst userspace/libc/%.c,$(LIBC_OUT)/%.o,$(LIBC_SRC))
+LIBC_A    := $(BUILD)/libc.a
+# USER_CC without its link flags, which -c would only warn about.
+LIBC_CC   := clang -target aarch64-none-elf -fPIE
+
+libc: $(LIBC_A)
+
+$(LIBC_OUT)/%.o: userspace/libc/%.c $(LIBC_H)
+	@mkdir -p $(@D)
+	$(LIBC_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(LIBC_A): $(LIBC_OBJS)
+	rm -f $@
+	rust-ar rcs $@ $^
 
 # ---- games --------------------------------------------------------------
 # Every folder in games/ is a game: its .c and .s files are built into one
