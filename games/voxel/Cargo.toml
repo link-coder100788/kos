@@ -1,0 +1,12 @@
+cargo-features = ["per-package-target"]
+
+[package]
+name = "voxel"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+# Always built for KOS, even by `cargo build -p voxel` from the workspace root.
+forced-target = "aarch64-unknown-none"
+
+[dependencies]
+glam = { version = "0.34.3", default-features = false, features = ["libm"] }
