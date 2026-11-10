@@ -280,13 +280,21 @@ $(LIBC_A): $(LIBC_OBJS)
 # program named after the folder, which goes on the disk as a plain ELF,
 # games/<name>/ -> /games/<name>.elf (`run /games/<name>.elf` in the shell).
 # build/user/games/debug keeps the debug info; the disk's copies are stripped.
+# A folder with a Cargo.toml is a Rust game instead: a workspace member whose
+# package is named after the folder, built by cargo, linked with build/libc.a.
 
 GAME_DIRS := $(patsubst %/,%,$(wildcard games/*/))
 GAME_OUT  := $(USER_OUT)/games
 GAME_DEBUG := $(patsubst games/%,$(GAME_OUT)/debug/%.elf,$(GAME_DIRS))
 GAME_ELFS  := $(patsubst games/%,$(GAME_OUT)/disk/games/%.elf,$(GAME_DIRS))
+RUST_GAME_DEBUG := $(patsubst games/%/Cargo.toml,$(GAME_OUT)/debug/%.elf,$(wildcard games/*/Cargo.toml))
 
 games: $(GAME_DEBUG) $(GAME_ELFS)
+
+# cargo knows when a Rust game is out of date, so it always gets asked.
+$(RUST_GAME_DEBUG): $(GAME_OUT)/debug/%.elf: $(LIBC_A) FORCE | $(GAME_OUT)/debug
+	cargo build -p $* --release
+	cp $(TARGET)/$* $@
 
 .SECONDEXPANSION:
 $(GAME_OUT)/debug/%.elf: $$(wildcard games/$$*/*.c games/$$*/*.s) $(LIBC_SRC) $(LIBC_H) | $(GAME_OUT)/debug
