@@ -18,7 +18,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use crate::arch::timer;
 use crate::drivers::virtio::mmio::{find_devices, Device, VirtQueue, DESC_F_NEXT, DESC_F_WRITE};
 use crate::mm::layout::virt_to_phys;
@@ -69,6 +69,28 @@ struct Context {
 static CONTEXTS: Spinlock<BTreeMap<u32, Context>> = Spinlock::new(BTreeMap::new());
 static NEXT_CONTEXT: AtomicU32 = AtomicU32::new(1);
 
+/// For the Task Manager: frames handed back, and timer counts spent
+/// waiting for the device, since boot.
+static FRAMES: AtomicU64 = AtomicU64::new(0);
+static BUSY_COUNTS: AtomicU64 = AtomicU64::new(0);
+
+pub struct Stats {
+    /// Open contexts.
+    pub contexts: usize,
+    pub frames: u64,
+    /// Timer counts (timer::now) the device has spent on requests.
+    pub busy: u64,
+}
+
+/// How much the GPU's been used, if there is one.
+pub fn stats() -> Option<Stats> {
+    available().then(|| Stats {
+        contexts: CONTEXTS.lock().len(),
+        frames: FRAMES.load(Ordering::Relaxed),
+        busy: BUSY_COUNTS.load(Ordering::Relaxed),
+    })
+}
+
 fn irq() {
     let base = BASE.load(Ordering::Acquire);
     if base != 0 {
@@ -110,6 +132,7 @@ fn request(op: u32, ctx: u32, a: u32, b: u32, payload: &[u8], room: usize) -> Re
     let mut resp = vec![0u8; RESPONSE_LEN + room];
 
     WAIT.wait_until(|| BUSY.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok());
+    let started = timer::now();
     let sent = {
         let mut kgl = KGL.lock();
         match kgl.as_mut() {
@@ -126,6 +149,7 @@ fn request(op: u32, ctx: u32, a: u32, b: u32, payload: &[u8], room: usize) -> Re
     let done = sent && WAIT.wait_until_deadline(Some(timer::deadline_after_ms(TIMEOUT_MS)), || {
         KGL.lock().as_mut().is_some_and(|kgl| kgl.queue.pop_used().is_some())
     });
+    BUSY_COUNTS.fetch_add(timer::now() - started, Ordering::Relaxed);
     BUSY.store(false, Ordering::Release);
     WAIT.wake_all();
     if !sent {
@@ -185,6 +209,7 @@ pub fn submit(ctx: u32, commands: &[u8], frame: Option<&mut [u8]>) -> Result<(),
             if let Some(frame) = frame {
                 let n = data.len().min(frame.len());
                 frame[..n].copy_from_slice(&data[..n]);
+                FRAMES.fetch_add(1, Ordering::Relaxed);
             }
             Ok(())
         }

@@ -1,12 +1,14 @@
 //! The Task Manager: every task on core 0, programs first, with how much
 //! CPU they've used over the last second and how much memory each
-//! program has. Select a program and click End task (or press Delete) to kill it.
+//! program has, and a line on the GPU. Select a program and click End task
+//! (or press Delete) to kill it.
 
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use crate::arch::timer;
+use crate::drivers::virtio::kgl;
 use crate::drivers::input::{Key, MouseButton};
 use crate::process::{self, Console};
 use crate::scheduler::{self, TaskId};
@@ -17,8 +19,9 @@ use crate::ui::gfx::Surface;
 /// Size when it opens.
 const START_W: i32 = 610;
 const START_H: i32 = 400;
-const HEADER_Y: i32 = 40;
-const TOP: i32 = 62;
+const GPU_Y: i32 = 32;
+const HEADER_Y: i32 = 56;
+const TOP: i32 = 78;
 const ROW_H: i32 = 22;
 /// Below the rows: the "scroll for more" line, the status and the button.
 const FOOTER_H: i32 = 84;
@@ -48,6 +51,10 @@ pub struct TaskManager {
     /// Each task's ticks, and each core's, at the last refresh.
     last_ticks: BTreeMap<TaskId, u64>,
     last_all: [u64; scheduler::MAX_CORES],
+    /// The GPU's stats at the last refresh, and when (timer::now), and
+    /// what the line about it says.
+    last_gpu: Option<(kgl::Stats, u64)>,
+    gpu: String,
     /// Size of the window's content area.
     w: i32,
     h: i32,
@@ -63,6 +70,8 @@ impl TaskManager {
             last_refresh: 0,
             last_ticks: BTreeMap::new(),
             last_all: [0; scheduler::MAX_CORES],
+            last_gpu: None,
+            gpu: String::new(),
             w: START_W,
             h: START_H,
         };
@@ -95,11 +104,32 @@ impl TaskManager {
         self.rows = rows;
         self.last_ticks = ticks;
         self.last_all = all;
+        self.refresh_gpu();
         self.last_refresh = timer::uptime_ms();
         if self.selected.is_some_and(|id| !self.rows.iter().any(|r| r.id == id)) {
             self.selected = None;
         }
         self.scroll = self.scroll.min(self.rows.len().saturating_sub(self.visible_rows()));
+    }
+
+    fn refresh_gpu(&mut self) {
+        let now = timer::now();
+        let Some(stats) = kgl::stats() else {
+            self.gpu = String::from("GPU: none (this QEMU has no kos-gl device)");
+            return;
+        };
+        let contexts = format!("{} context{}", stats.contexts, if stats.contexts == 1 { "" } else { "s" });
+        self.gpu = match &self.last_gpu {
+            // Over the last second, as for CPU.
+            Some((before, then)) => {
+                let elapsed = (now - then).max(1);
+                let fps = (stats.frames - before.frames) * timer::frequency() / elapsed;
+                let busy = ((stats.busy - before.busy) * 100 / elapsed).min(100);
+                format!("GPU: host OpenGL, {}, {} frames/s, busy {}%", contexts, fps, busy)
+            }
+            None => format!("GPU: host OpenGL, {}", contexts),
+        };
+        self.last_gpu = Some((stats, now));
     }
 
     fn selected_row(&self) -> Option<&Row> {
@@ -172,6 +202,7 @@ impl App for TaskManager {
             .map(|&c| format!("{}:{}%", c, scheduler::idle_percent_of(c))).collect();
         let idle = format!("idle {}", idle.join(" "));
         s.draw_text(self.w - 12 - 8 * idle.len() as i32, 12, &idle, DIM, 1, 2);
+        s.draw_text(12, GPU_Y, &self.gpu, DIM, 1, 2);
         for (x, label) in COLS.iter().zip(["ID", "Name", "Kind", "Core", "State", "CPU", "Memory"]) {
             s.draw_text(*x, HEADER_Y, label, DIM, 1, 2);
         }
