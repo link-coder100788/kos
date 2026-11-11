@@ -21,7 +21,7 @@
 
 use alloc::collections::VecDeque;
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -76,10 +76,10 @@ pub struct Pipe {
 /// console, if it asked for less than a whole line.
 static CONSOLE_PENDING: IrqMutex<Vec<u8>> = IrqMutex::new(Vec::new());
 
-fn fs_error(path: &str, response: FsResponse) -> String {
+fn fs_error(response: FsResponse) -> String {
     match response {
-        FsResponse::Err(e) => format!("{}: {:?}", path, e),
-        _ => format!("{}: unexpected response from the filesystem", path),
+        FsResponse::Err(e) => e.to_string(),
+        _ => String::from("unexpected response from the filesystem"),
     }
 }
 
@@ -90,7 +90,7 @@ pub fn open(cwd: String, path: &str, flags: u64) -> Result<Fd, String> {
     let existing = match fs_call(FsRequest::Read { cwd: cwd.clone(), path: String::from(path) }) {
         FsResponse::Data(data) => Some(data),
         FsResponse::Err(crate::filesys::backend::FsError::NotFound) => None,
-        e => return Err(fs_error(path, e)),
+        e => return Err(fs_error(e)),
     };
     if existing.is_some() && flags & O_CREAT != 0 && flags & O_EXCL != 0 {
         return Err(format!("{}: AlreadyExists", path));
@@ -108,7 +108,7 @@ pub fn open(cwd: String, path: &str, flags: u64) -> Result<Fd, String> {
             }
             match fs_call(FsRequest::Write { cwd: cwd.clone(), path: String::from(path), data: Vec::new() }) {
                 FsResponse::Ok => Vec::new(),
-                e => return Err(fs_error(path, e)),
+                e => return Err(fs_error(e)),
             }
         }
     };
@@ -300,7 +300,7 @@ impl Object {
         };
         match fs_call(FsRequest::Write { cwd, path: path.clone(), data }) {
             FsResponse::Ok => Ok(()),
-            e => Err(fs_error(&path, e)),
+            e => Err(fs_error(e)),
         }
     }
 }

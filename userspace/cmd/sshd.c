@@ -14,10 +14,10 @@
 // client: key exchange curve25519-sha256, host key ssh-ed25519, cipher
 // aes256-gcm@openssh.com.
 //
-// A session gets sshd's own shell (`help` lists its commands). Anything
-// else in /bin (grep, wc, curl...) runs as a program, with its output sent
-// to the client and what the client types as its input, until it ends;
-// Ctrl+C ends it. `ssh host command` runs one command. One session at a
+// A session gets sshd's own shell (`help` lists its commands). Programs in
+// /bin (ls, grep, wc, curl...) run with their output sent to the client and
+// what the client types as their input, until they end; Ctrl+C ends them.
+// They can be joined with |, and read a file with <. `ssh host command` runs one command. One session at a
 // time: anyone else connecting waits until it ends.
 
 #include "../libc/sys.h"
@@ -742,6 +742,9 @@ static struct {
     /// How much the client may still send before we adjust the window.
     uint32_t local_window;
     bool pty;
+    /// The client turned echo off in its terminal modes (it shows what's
+    /// typed itself, as KOS's ssh does).
+    bool no_echo;
     int cols;
     /// "shell" or "exec" has been asked for.
     bool started;
@@ -815,6 +818,16 @@ static void handle_channel_request(reader_t* r) {
     if (strcmp(name, "pty-req") == 0) {
         get_string(r, &(uint32_t){0}); // TERM
         chan.cols = (int)get_u32(r);
+        get_u32(r); // rows, and the size in pixels
+        get_u32(r);
+        get_u32(r);
+        // Terminal modes: opcode bytes with a u32 each, up to 0 (or 160+).
+        uint32_t len;
+        const uint8_t* modes = get_string(r, &len);
+        for (uint32_t i = 0; modes && i + 5 <= len && modes[i] != 0 && modes[i] < 160; i += 5) {
+            uint32_t value = (uint32_t)modes[i + 1] << 24 | modes[i + 2] << 16 | modes[i + 3] << 8 | modes[i + 4];
+            if (modes[i] == 53) chan.no_echo = value == 0; // ECHO
+        }
         chan.pty = ok = !r->bad;
     } else if (strcmp(name, "window-change") == 0) {
         chan.cols = (int)get_u32(r);
@@ -936,6 +949,11 @@ static void channel_send(const void* data, size_t len, bool err) {
     buf_free(&converted);
 }
 
+/// Shows the client what it typed, unless it does that itself.
+static void echo_back(const void* data, size_t len) {
+    if (!chan.no_echo) channel_send(data, len, false);
+}
+
 /// Ends the session the polite way: the exit status, EOF and CLOSE.
 __attribute__((noreturn)) static void finish(int status) {
     buf_t b = {0};
@@ -1046,12 +1064,6 @@ static bool is_dir(const char* path) {
     return true;
 }
 
-/// The last part of a path.
-static const char* base_name(const char* path) {
-    const char* slash = strrchr(path, '/');
-    return slash ? slash + 1 : path;
-}
-
 // ---- commands ----------------------------------------------------------------------------
 
 static int status;
@@ -1060,15 +1072,6 @@ static bool want_exit;
 typedef int (*command_fn)(int argc, char** argv);
 
 static int c_help(int argc, char** argv);
-
-static int c_echo(int argc, char** argv) {
-    for (int i = 1; i < argc; i++) {
-        if (i > 1) outs(" ");
-        outs(argv[i]);
-    }
-    outs("\n");
-    return 0;
-}
 
 static int c_pwd(int argc, char** argv) {
     outf("%s\n", cwd);
@@ -1086,222 +1089,6 @@ static int c_cd(int argc, char** argv) {
     return 0;
 }
 
-static int compare_entries(const void* a, const void* b) {
-    const fs_entry_t* x = a;
-    const fs_entry_t* y = b;
-    return strcasecmp(x->name, y->name);
-}
-
-static int c_ls(int argc, char** argv) {
-    bool all = false, long_form = false;
-    int first = 1;
-    for (; first < argc && argv[first][0] == '-' && argv[first][1]; first++) {
-        for (char* f = argv[first] + 1; *f; f++) {
-            if (*f == 'a') all = true;
-            else if (*f == 'l') long_form = true;
-            else {
-                err("ls: unknown option -%c", *f);
-                return 1;
-            }
-        }
-    }
-    int result = 0;
-    int paths = argc - first;
-    for (int i = first; i < argc || (paths == 0 && i == first); i++) {
-        const char* arg = paths ? argv[i] : ".";
-        char path[512];
-        resolve(arg, path, sizeof path);
-        int count;
-        fs_entry_t* entries = fs_list(path, &count);
-        if (!entries) {
-            if (fs_size(path) >= 0) {
-                if (long_form) outf("%10ld  %s\n", fs_size(path), arg);
-                else outf("%s\n", arg);
-            } else {
-                err("ls: %s: not found", arg);
-                result = 1;
-            }
-            continue;
-        }
-        if (paths > 1) outf("%s%s:\n", i > first ? "\n" : "", arg);
-        qsort(entries, count, sizeof *entries, compare_entries);
-        int width = 0, shown = 0;
-        for (int e = 0; e < count; e++) {
-            int w = (int)strlen(entries[e].name) + entries[e].is_dir;
-            if (w > width) width = w;
-        }
-        int cols = chan.cols > 0 ? chan.cols : 80;
-        int per_row = cols / (width + 2);
-        if (per_row < 1) per_row = 1;
-        for (int e = 0; e < count; e++) {
-            fs_entry_t* entry = &entries[e];
-            if (!all && entry->name[0] == '.') continue;
-            if (long_form) {
-                if (entry->is_dir) outf("%10s  %s/\n", "-", entry->name);
-                else outf("%10u  %s\n", entry->size, entry->name);
-                continue;
-            }
-            char name[260];
-            snprintf(name, sizeof name, "%s%s", entry->name, entry->is_dir ? "/" : "");
-            bool last_in_row = ++shown % per_row == 0;
-            // In columns only on a terminal, like Unix's ls.
-            if (capturing || !chan.pty) outf("%s\n", name);
-            else outf("%-*s%s", width + 2, name, last_in_row ? "\n" : "");
-        }
-        if (!long_form && !capturing && chan.pty && shown % per_row != 0) outs("\n");
-        free(entries);
-    }
-    return result;
-}
-
-static int c_cat(int argc, char** argv) {
-    if (argc < 2) {
-        err("usage: cat <file>...");
-        return 1;
-    }
-    int result = 0;
-    for (int i = 1; i < argc; i++) {
-        char path[512];
-        resolve(argv[i], path, sizeof path);
-        size_t len;
-        char* data = fs_read_all(path, &len);
-        if (!data) {
-            err("cat: %s: %s", argv[i], last_error());
-            result = 1;
-            continue;
-        }
-        out(data, len);
-        free(data);
-    }
-    return result;
-}
-
-static int c_head(int argc, char** argv) {
-    long lines = 10;
-    int first = 1;
-    if (argc > 2 && strcmp(argv[1], "-n") == 0) {
-        lines = strtol(argv[2], NULL, 10);
-        first = 3;
-    }
-    if (first >= argc) {
-        err("usage: head [-n lines] <file>");
-        return 1;
-    }
-    char path[512];
-    resolve(argv[first], path, sizeof path);
-    size_t len;
-    char* data = fs_read_all(path, &len);
-    if (!data) {
-        err("head: %s: %s", argv[first], last_error());
-        return 1;
-    }
-    size_t end = 0;
-    for (long n = 0; end < len && n < lines; end++)
-        if (data[end] == '\n') n++;
-    out(data, end);
-    free(data);
-    return 0;
-}
-
-static int c_wc(int argc, char** argv) {
-    if (argc < 2) {
-        err("usage: wc <file>...");
-        return 1;
-    }
-    int result = 0;
-    for (int i = 1; i < argc; i++) {
-        char path[512];
-        resolve(argv[i], path, sizeof path);
-        size_t len;
-        char* data = fs_read_all(path, &len);
-        if (!data) {
-            err("wc: %s: %s", argv[i], last_error());
-            result = 1;
-            continue;
-        }
-        size_t lines = 0, words = 0;
-        bool in_word = false;
-        for (size_t j = 0; j < len; j++) {
-            char c = data[j];
-            if (c == '\n') lines++;
-            bool space = c == ' ' || c == '\n' || c == '\t' || c == '\r';
-            if (!space && !in_word) words++;
-            in_word = !space;
-        }
-        outf("%7zu %7zu %7zu %s\n", lines, words, len, argv[i]);
-        free(data);
-    }
-    return result;
-}
-
-static int c_grep(int argc, char** argv) {
-    bool ignore_case = false, numbers = false;
-    int first = 1;
-    for (; first < argc && argv[first][0] == '-' && argv[first][1]; first++) {
-        for (char* f = argv[first] + 1; *f; f++) {
-            if (*f == 'i') ignore_case = true;
-            else if (*f == 'n') numbers = true;
-        }
-    }
-    if (argc - first < 2) {
-        err("usage: grep [-i] [-n] <text> <file>...");
-        return 1;
-    }
-    const char* pattern = argv[first];
-    int files = argc - first - 1;
-    int found = 0;
-    for (int i = first + 1; i < argc; i++) {
-        char path[512];
-        resolve(argv[i], path, sizeof path);
-        char* data = fs_read_all(path, NULL);
-        if (!data) {
-            err("grep: %s: %s", argv[i], last_error());
-            continue;
-        }
-        int number = 0;
-        for (char* line = data; line && *line;) {
-            char* end = strchr(line, '\n');
-            if (end) *end = '\0';
-            number++;
-            if (ignore_case ? strcasestr(line, pattern) != NULL : strstr(line, pattern) != NULL) {
-                found++;
-                if (files > 1) outf("%s:", argv[i]);
-                if (numbers) outf("%d:", number);
-                outf("%s\n", line);
-            }
-            line = end ? end + 1 : NULL;
-        }
-        free(data);
-    }
-    return found ? 0 : 1;
-}
-
-static int c_mkdir(int argc, char** argv) {
-    int result = 0;
-    for (int i = 1; i < argc; i++) {
-        char path[512];
-        resolve(argv[i], path, sizeof path);
-        if (fs_mkdir(path) < 0) {
-            err("mkdir: %s: %s", argv[i], last_error());
-            result = 1;
-        }
-    }
-    return result;
-}
-
-static int c_rm(int argc, char** argv) {
-    int result = 0;
-    for (int i = 1; i < argc; i++) {
-        char path[512];
-        resolve(argv[i], path, sizeof path);
-        if (fs_remove(path) < 0) {
-            err("rm: %s: %s", argv[i], last_error());
-            result = 1;
-        }
-    }
-    return result;
-}
-
 static int c_touch(int argc, char** argv) {
     int result = 0;
     for (int i = 1; i < argc; i++) {
@@ -1313,55 +1100,6 @@ static int c_touch(int argc, char** argv) {
         }
     }
     return result;
-}
-
-/// cp and mv: copies src to dst (or into it, if it's a folder), then with
-/// `move` removes src.
-static int copy(int argc, char** argv, bool move) {
-    if (argc != 3) {
-        err("usage: %s <from> <to>", argv[0]);
-        return 1;
-    }
-    char src[512], dst[512];
-    resolve(argv[1], src, sizeof src);
-    resolve(argv[2], dst, sizeof dst);
-    if (is_dir(dst)) {
-        size_t n = strlen(dst);
-        snprintf(dst + n, sizeof dst - n, "%s%s", n > 1 ? "/" : "", base_name(src));
-    }
-    size_t len;
-    char* data = fs_read_all(src, &len);
-    if (!data) {
-        err("%s: %s: %s", argv[0], argv[1], last_error());
-        return 1;
-    }
-    long written = fs_write(dst, data, len);
-    free(data);
-    if (written < 0) {
-        err("%s: %s: %s", argv[0], argv[2], last_error());
-        return 1;
-    }
-    if (move && fs_remove(src) < 0) {
-        err("mv: couldn't remove %s: %s", argv[1], last_error());
-        return 1;
-    }
-    return 0;
-}
-
-static int c_cp(int argc, char** argv) {
-    return copy(argc, argv, false);
-}
-
-static int c_mv(int argc, char** argv) {
-    return copy(argc, argv, true);
-}
-
-static int c_uname(int argc, char** argv) {
-    utsname_t u;
-    uname(&u);
-    if (argc > 1 && strcmp(argv[1], "-a") == 0) outf("%s %s %s %s %s\n", u.sysname, u.nodename, u.release, u.version, u.machine);
-    else outf("%s\n", u.sysname);
-    return 0;
 }
 
 static int c_uptime(int argc, char** argv) {
@@ -1449,9 +1187,9 @@ static char typed[LINE_MAX];
 static size_t typed_len;
 
 /// Passes what the client has typed to a running program's input `*in`
-/// (program `id`): a line at a time with a terminal, as it comes without.
-/// Ctrl+C ends the program; Ctrl+D (or the client's EOF) ends its input.
-static void feed_input(long* in, long id) {
+/// (-1 for none): a line at a time with a terminal, as it comes without.
+/// Ctrl+C ends programs `ids`; Ctrl+D (or the client's EOF) ends the input.
+static void feed_input(long* in, const long* ids, int count) {
     while (chan.input_len > 0) {
         size_t used = 1;
         uint8_t c = chan.input[0];
@@ -1460,25 +1198,25 @@ static void feed_input(long* in, long id) {
             if (*in >= 0) fd_write(*in, chan.input, used);
         } else if (c == 0x03) {
             channel_send("^C\r\n", 4, false);
-            proc_kill(id);
+            for (int i = 0; i < count; i++) proc_kill(ids[i]);
         } else if (c == 0x04) {
             if (*in >= 0) fd_close(*in);
             *in = -1;
         } else if (c == '\r' || c == '\n') {
             // \r\n is one Enter.
             if (c == '\r' && chan.input_len > 1 && chan.input[1] == '\n') used = 2;
-            channel_send("\r\n", 2, false);
+            echo_back("\r\n", 2);
             typed[typed_len++] = '\n';
             if (*in >= 0) fd_write(*in, typed, typed_len);
             typed_len = 0;
         } else if (c == 0x7f || c == '\b') {
             if (typed_len > 0) {
                 typed_len--;
-                channel_send("\b \b", 3, false);
+                echo_back("\b \b", 3);
             }
         } else if (c >= 0x20 && typed_len < sizeof typed - 1) {
             typed[typed_len++] = (char)c;
-            channel_send(&c, 1, false);
+            echo_back(&c, 1);
         }
         memmove(chan.input, chan.input + used, chan.input_len - used);
         chan.input_len -= used;
@@ -1506,48 +1244,132 @@ static bool forward_output(long* fd, bool is_err) {
     return true;
 }
 
-/// Runs program `path` with `args` until it ends: what it prints goes to
-/// the client (stdout through out(), so `> file` catches it), and what the
-/// client types to it. Returns its exit status.
-static int run_here(const char* name, const char* path, const char* args) {
-    int in[2] = { -1, -1 }, outp[2] = { -1, -1 }, errp[2] = { -1, -1 };
-    if (fd_pipe(in) < 0 || fd_pipe(outp) < 0 || fd_pipe(errp) < 0) {
-        err("%s: %s", name, last_error());
-        for (int i = 0; i < 2; i++) {
-            if (in[i] >= 0) fd_close(in[i]);
-            if (outp[i] >= 0) fd_close(outp[i]);
-            if (errp[i] >= 0) fd_close(errp[i]);
-        }
+#define MAX_STAGES 8
+
+/// The programs a command line is running, and our ends of their pipes
+/// (-1 once closed), so a session that ends halfway can end them too.
+static struct {
+    long ids[MAX_STAGES];
+    int count;
+    long in, out, err;
+} running = { .in = -1, .out = -1, .err = -1 };
+
+static bool any_running(void) {
+    for (int i = 0; i < running.count; i++)
+        if (proc_running(running.ids[i])) return true;
+    return false;
+}
+
+/// Ends whatever a session left running (when the client goes mid-command).
+static void end_programs(void) {
+    for (int i = 0; i < running.count; i++) {
+        proc_kill(running.ids[i]);
+        proc_wait(running.ids[i]);
+    }
+    running.count = 0;
+    long* fds[] = { &running.in, &running.out, &running.err };
+    for (int i = 0; i < 3; i++) {
+        if (*fds[i] >= 0) fd_close(*fds[i]);
+        *fds[i] = -1;
+    }
+}
+
+/// Runs `count` programs (`paths` with `args`) until they end, each one's
+/// output going into the next one's input. The last one's output goes to
+/// the client through out() (so `> file` catches it); errors from all of
+/// them go straight to the client. The first one reads file `in_file`
+/// (which this closes) if it isn't -1, else `feed` (what a command printed)
+/// if it isn't NULL, else what the client types. Returns the last one's exit
+/// status.
+static int run_programs(int count, char* const* names, char* const* paths, char* const* args, long in_file, const buf_t* feed) {
+    int errp[2], in[2];
+    if (fd_pipe(errp) < 0) {
+        err("%s: %s", names[0], last_error());
+        if (in_file >= 0) fd_close(in_file);
         return 1;
     }
-    int fds[3] = { in[0], outp[1], errp[1] };
-    long id = spawn_io(path, args, fds);
-    // Only the program holds those ends now.
-    fd_close(in[0]);
-    fd_close(outp[1]);
-    fd_close(errp[1]);
-    long in_fd = in[1], out_fd = outp[0], err_fd = errp[0];
-    if (id < 0) {
-        err("%s: %s", name, last_error());
-        fd_close(in_fd);
-        fd_close(out_fd);
-        fd_close(err_fd);
-        return 126;
+    // Our end of the first program's input, and what the next one reads.
+    running.in = -1;
+    long next_in = in_file;
+    if (in_file < 0) {
+        if (fd_pipe(in) < 0) {
+            err("%s: %s", names[0], last_error());
+            fd_close(errp[0]);
+            fd_close(errp[1]);
+            return 1;
+        }
+        next_in = in[0];
+        running.in = in[1];
     }
+    running.count = 0;
+    int result = 0;
+    for (int i = 0; i < count; i++) {
+        int outp[2];
+        if (fd_pipe(outp) < 0) {
+            err("%s: %s", names[i], last_error());
+            result = 1;
+            break;
+        }
+        int fds[3] = { (int)next_in, outp[1], errp[1] };
+        running.ids[i] = spawn_io(paths[i], args[i], fds);
+        // Only the programs hold those ends now.
+        fd_close(next_in);
+        fd_close(outp[1]);
+        next_in = outp[0];
+        if (running.ids[i] < 0) {
+            err("%s: %s", names[i], last_error());
+            result = 126;
+            break;
+        }
+        running.count++;
+    }
+    fd_close(errp[1]);
+    running.out = next_in;
+    running.err = errp[0];
+    if (running.count < count) {
+        // Something didn't start: end the rest of the line too.
+        for (int i = 0; i < running.count; i++) proc_kill(running.ids[i]);
+        fd_close(running.out);
+        running.out = -1;
+    }
+    size_t fed = 0;
     typed_len = 0;
-    while (out_fd >= 0 || err_fd >= 0 || proc_running(id)) {
-        bool busy = forward_output(&out_fd, false);
-        busy |= forward_output(&err_fd, true);
+    while (running.out >= 0 || running.err >= 0 || any_running()) {
+        // Once the last one's ended, nothing reads what the others print
+        // (as with `yes | head`), so they end too.
+        if (running.count == count && !proc_running(running.ids[count - 1]))
+            for (int i = 0; i < count - 1; i++) proc_kill(running.ids[i]);
+        bool busy = forward_output(&running.out, false);
+        busy |= forward_output(&running.err, true);
         pump_now();
         while (packet_waiting()) {
             wait_packet();
             busy = true;
         }
-        feed_input(&in_fd, id);
+        if (feed && running.in >= 0) {
+            long n = fed < feed->len ? fd_write_now(running.in, feed->data + fed, feed->len - fed) : 0;
+            if (n > 0) {
+                fed += n;
+                busy = true;
+            }
+            // All of it went in, or nothing reads it any more.
+            if (fed >= feed->len || (n < 0 && n != -2)) {
+                fd_close(running.in);
+                running.in = -1;
+            }
+        }
+        long none = -1;
+        feed_input(feed ? &none : &running.in, running.ids, running.count);
         if (!busy) sleep_ms(10);
     }
-    if (in_fd >= 0) fd_close(in_fd);
-    return (int)proc_wait(id);
+    if (running.in >= 0) fd_close(running.in);
+    running.in = -1;
+    for (int i = 0; i < running.count; i++) {
+        long status = proc_wait(running.ids[i]);
+        if (i == count - 1) result = (int)status;
+    }
+    running.count = 0;
+    return result;
 }
 
 /// argv[1...] as one string of arguments for a program, with relative
@@ -1582,21 +1404,10 @@ static int c_run(int argc, char** argv) {
         return 127;
     }
     char* args = program_args(argc - 1, argv + 1);
-    int result = run_here(argv[1], path, args);
+    char* paths[] = { path };
+    int result = run_programs(1, &argv[1], paths, &args, -1, NULL);
     free(args);
     return result;
-}
-
-static int c_kill(int argc, char** argv) {
-    if (argc != 2) {
-        err("usage: kill <id>");
-        return 1;
-    }
-    if (proc_kill(strtol(argv[1], NULL, 10)) < 0) {
-        err("kill: %s", last_error());
-        return 1;
-    }
-    return 0;
 }
 
 static int c_clear(int argc, char** argv) {
@@ -1614,41 +1425,31 @@ static const struct {
     command_fn fn;
     const char* help;
 } commands[] = {
-    {"cat", c_cat, "cat <file>...           print files"},
     {"cd", c_cd, "cd [folder]             change folder"},
     {"clear", c_clear, "clear                   clear the screen"},
-    {"cp", c_cp, "cp <from> <to>          copy a file"},
     {"date", c_date, "date                    the date and time"},
-    {"echo", c_echo, "echo <text>...          print text"},
     {"exit", c_exit, "exit [status]           log out (also logout, Ctrl+D)"},
     {"get", c_get, "get <url>               fetch a web page and print it"},
-    {"grep", c_grep, "grep [-i] [-n] <text> <file>...  lines containing text"},
-    {"head", c_head, "head [-n lines] <file>  the start of a file"},
     {"help", c_help, "help                    this list"},
     {"ip", c_ip, "ip                      KOS's network address"},
-    {"kill", c_kill, "kill <id>               end a program"},
     {"logout", c_exit, NULL},
-    {"ls", c_ls, "ls [-a] [-l] [path]...  list files"},
-    {"mkdir", c_mkdir, "mkdir <folder>...       make folders"},
-    {"mv", c_mv, "mv <from> <to>          move or rename a file"},
     {"ping", c_ping, "ping <host>             ping a computer"},
     {"pwd", c_pwd, "pwd                     the current folder"},
-    {"rm", c_rm, "rm <path>...            delete files or empty folders"},
     {"run", c_run, "run <program> [args]    run a program (or just type its name)"},
     {"touch", c_touch, "touch <file>...         make empty files"},
-    {"uname", c_uname, "uname [-a]              the system's name"},
     {"uptime", c_uptime, "uptime                  how long KOS has been running"},
-    {"wc", c_wc, "wc <file>...            count lines, words and bytes"},
     {"whoami", c_whoami, "whoami                  the name you logged in with"},
 };
 
 #define COMMAND_COUNT (sizeof commands / sizeof commands[0])
 
 static int c_help(int argc, char** argv) {
-    outs("sshd's commands (output can go to a file with > or >>; ; separates commands):\n");
+    outs("sshd's own commands:\n");
     for (size_t i = 0; i < COMMAND_COUNT; i++)
         if (commands[i].help) outf("  %s\n", commands[i].help);
-    outs("Other programs in /bin and /programs start with `run`, and print on the KOS console.\n");
+    outs("Programs in /bin and /programs (ls, cat, grep, wc, head, cp, ...) run by name.\n");
+    outs("a | b joins programs, < file feeds one a file, > file and >> file catch the output,\n");
+    outs("and ; separates commands.\n");
     return 0;
 }
 
@@ -1688,60 +1489,150 @@ static int split(const char* line, char* words, char** argv) {
     return argc;
 }
 
-/// Runs one command (no ;), with any > or >> redirection.
-static void run_command(const char* text) {
-    char words[LINE_MAX * 2];
-    char* argv[MAX_ARGS];
-    int argc = split(text, words, argv);
-    if (argc < 0) {
-        err("sshd: unfinished quote, or too many words");
-        status = 2;
-        return;
+/// Splits `line` at `sep`s outside quotes into copies in `buf` (as big
+/// as line), pointed to by `parts`. Returns the count, or -1 if there are
+/// more than `max`.
+static int split_at(const char* line, char sep, char* buf, char** parts, int max) {
+    int count = 0;
+    char quote = 0;
+    parts[count++] = buf;
+    for (const char* p = line; *p; p++) {
+        if (*p == sep && !quote) {
+            *buf++ = '\0';
+            if (count == max) return -1;
+            parts[count++] = buf;
+            continue;
+        }
+        if (quote ? *p == quote : (*p == '"' || *p == '\'')) quote = quote ? 0 : *p;
+        *buf++ = *p;
     }
-    if (argc == 0) return;
-    // A trailing "> file", ">> file", ">file" or ">>file".
-    const char* target = NULL;
-    bool append = false;
-    for (int i = 0; i < argc; i++) {
-        if (argv[i][0] != '>') continue;
-        append = argv[i][1] == '>';
-        const char* name = argv[i] + 1 + append;
+    *buf = '\0';
+    return count;
+}
+
+/// Takes a redirection with `op` ('>' or '<') out of argv: "> file",
+/// ">> file", ">file" or ">>file" (or the same with <). Returns 1 with its
+/// file in *file (and whether it's >> in *append), 0 if there's none, or -1
+/// if the file name is missing.
+static int take_redirect(int* argc, char** argv, char op, const char** file, bool* append) {
+    for (int i = 0; i < *argc; i++) {
+        if (argv[i][0] != op) continue;
+        *append = op == '>' && argv[i][1] == '>';
+        const char* name = argv[i] + 1 + *append;
         int used = 1;
         if (!*name) {
-            if (i + 1 >= argc) {
-                err("sshd: > needs a file name");
-                status = 2;
-                return;
+            if (i + 1 >= *argc) {
+                err("sshd: %c needs a file name", op);
+                return -1;
             }
             name = argv[i + 1];
             used = 2;
         }
-        target = name;
-        for (int j = i; j + used <= argc; j++) argv[j] = argv[j + used];
-        argc -= used;
-        break;
+        *file = name;
+        for (int j = i; j + used <= *argc; j++) argv[j] = argv[j + used];
+        *argc -= used;
+        return 1;
     }
-    if (argc == 0) return;
-    command_fn fn = NULL;
+    return 0;
+}
+
+static command_fn find_command(const char* name) {
     for (size_t i = 0; i < COMMAND_COUNT; i++)
-        if (strcmp(argv[0], commands[i].name) == 0) fn = commands[i].fn;
-    char path[512];
-    if (!fn && !find_program(argv[0], path, sizeof path)) {
-        err("%s: command not found (try help)", argv[0]);
-        status = 127;
+        if (strcmp(name, commands[i].name) == 0) return commands[i].fn;
+    return NULL;
+}
+
+/// Runs one command line (no ;): programs joined with |, any < file on the
+/// first, any > or >> file on the last. sshd's own commands don't read
+/// input, so one can only start a pipeline.
+static void run_command(const char* text) {
+    static char stage_text[LINE_MAX];
+    static char words[MAX_STAGES][LINE_MAX];
+    char* stages[MAX_STAGES];
+    int count = split_at(text, '|', stage_text, stages, MAX_STAGES);
+    if (count < 0) {
+        err("sshd: at most %d programs can be joined with |", MAX_STAGES);
+        status = 2;
         return;
+    }
+    char* argvs[MAX_STAGES][MAX_ARGS];
+    int argcs[MAX_STAGES];
+    for (int i = 0; i < count; i++) {
+        argcs[i] = split(stages[i], words[i], argvs[i]);
+        if (argcs[i] < 0) {
+            err("sshd: unfinished quote, or too many words");
+            status = 2;
+            return;
+        }
+    }
+    const char *target = NULL, *source = NULL;
+    bool append = false, unused;
+    if (take_redirect(&argcs[count - 1], argvs[count - 1], '>', &target, &append) < 0 ||
+        take_redirect(&argcs[0], argvs[0], '<', &source, &unused) < 0) {
+        status = 2;
+        return;
+    }
+    for (int i = 0; i < count; i++) {
+        if (argcs[i] > 0) continue;
+        if (count > 1) {
+            err("sshd: a | with nothing on one side");
+            status = 2;
+        }
+        return;
+    }
+    // sshd's own command, if the line starts with one, and the programs.
+    command_fn fn = find_command(argvs[0][0]);
+    int first = fn ? 1 : 0;
+    static char paths[MAX_STAGES][512];
+    char* names[MAX_STAGES];
+    char* path_list[MAX_STAGES];
+    for (int i = first; i < count; i++) {
+        names[i - first] = argvs[i][0];
+        path_list[i - first] = paths[i];
+        if (i > 0 && find_command(argvs[i][0])) {
+            err("%s: sshd's own commands don't read input, so they can only come first", argvs[i][0]);
+            status = 2;
+            return;
+        }
+        if (!find_program(argvs[i][0], paths[i], sizeof paths[i])) {
+            err("%s: command not found (try help)", argvs[i][0]);
+            status = 127;
+            return;
+        }
+    }
+    long in_file = -1;
+    if (source && !fn) {
+        char path[512];
+        resolve(source, path, sizeof path);
+        in_file = fd_open(path, FD_READ);
+        if (in_file < 0) {
+            err("sshd: %s: %s", source, last_error());
+            status = 1;
+            return;
+        }
+    }
+    buf_t printed = {0};
+    if (fn && count > 1) {
+        // What it prints goes into the first program.
+        capturing = true;
+        captured.len = 0;
+        status = fn(argcs[0], argvs[0]);
+        put_bytes(&printed, captured.data, captured.len);
+        capturing = false;
     }
     if (target) {
         capturing = true;
         captured.len = 0;
     }
-    if (fn) {
-        status = fn(argc, argv);
+    if (fn && count == 1) {
+        status = fn(argcs[0], argvs[0]);
     } else {
-        char* args = program_args(argc, argv);
-        status = run_here(argv[0], path, args);
-        free(args);
+        char* args[MAX_STAGES];
+        for (int i = first; i < count; i++) args[i - first] = program_args(argcs[i], argvs[i]);
+        status = run_programs(count - first, names, path_list, args, in_file, fn ? &printed : NULL);
+        for (int i = first; i < count; i++) free(args[i - first]);
     }
+    buf_free(&printed);
     if (target) {
         capturing = false;
         char path[512];
@@ -1756,20 +1647,10 @@ static void run_command(const char* text) {
 
 /// Runs a line of commands separated by ;.
 static void run_line(const char* line) {
-    char part[LINE_MAX];
-    size_t n = 0;
-    char quote = 0;
-    for (const char* p = line;; p++) {
-        if (*p == '\0' || (*p == ';' && !quote)) {
-            part[n] = '\0';
-            run_command(part);
-            n = 0;
-            if (*p == '\0' || want_exit) return;
-            continue;
-        }
-        if (quote ? *p == quote : (*p == '"' || *p == '\'')) quote = quote ? 0 : *p;
-        if (n < sizeof part - 1) part[n++] = *p;
-    }
+    static char buf[LINE_MAX];
+    char* parts[LINE_MAX / 2];
+    int count = split_at(line, ';', buf, parts, LINE_MAX / 2);
+    for (int i = 0; i < count && !want_exit; i++) run_command(parts[i]);
 }
 
 // ---- the shell ---------------------------------------------------------------------------
@@ -1819,7 +1700,7 @@ static void show_history(int index) {
 }
 
 static void enter(void) {
-    outs("\r\n");
+    echo_back("\r\n", 2);
     ed.line[ed.len] = '\0';
     remember(ed.line);
     run_line(ed.line);
@@ -1857,7 +1738,7 @@ static void key(uint8_t c) {
     case '\b':
         if (ed.len > 0) {
             ed.len--;
-            outs("\b \b");
+            echo_back("\b \b", 3);
         }
         break;
     case 0x03: // Ctrl+C
@@ -1886,7 +1767,7 @@ static void key(uint8_t c) {
     default:
         if (c >= 0x20 && ed.len < sizeof ed.line - 1) {
             ed.line[ed.len++] = (char)c;
-            out(&c, 1);
+            echo_back(&c, 1);
         }
         break;
     }
@@ -2072,6 +1953,7 @@ void _start(void) {
         in_session = true;
         if (set_jump_point(session_over) == 0) serve();
         in_session = false;
+        end_programs();
         tcp_close(conn);
     }
 }

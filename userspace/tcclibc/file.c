@@ -19,11 +19,11 @@ int errno;
 // Sets errno from why the kernel said the last call failed, and returns -1.
 static int failed(void) {
     const char* why = last_error();
-    if (strstr(why, "NotFound")) errno = ENOENT;
-    else if (strstr(why, "AlreadyExists")) errno = EEXIST;
+    if (strstr(why, "no such file")) errno = ENOENT;
+    else if (strstr(why, "already exists")) errno = EEXIST;
     else if (strstr(why, "too many open files")) errno = EMFILE;
     else if (strstr(why, "bad file descriptor") || strstr(why, "not open for")) errno = EBADF;
-    else if (strstr(why, "NotAFile") || strstr(why, "NotADirectory")) errno = EACCES;
+    else if (strstr(why, "is a folder") || strstr(why, "not a folder")) errno = EACCES;
     else errno = EIO;
     return -1;
 }

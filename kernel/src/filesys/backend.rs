@@ -28,6 +28,23 @@ pub enum FsError {
     Io,
 }
 
+/// What programs see from `last_error`: the caller already knows the path,
+/// so it isn't part of it.
+impl core::fmt::Display for FsError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            FsError::NotFound => "no such file or folder",
+            FsError::NotADirectory => "not a folder",
+            FsError::NotAFile => "is a folder",
+            FsError::AlreadyExists => "already exists",
+            FsError::NotEmpty => "folder isn't empty",
+            FsError::NoSpace => "the disk is full",
+            FsError::InvalidPath => "bad path",
+            FsError::Io => "disk error",
+        })
+    }
+}
+
 pub struct DirEntryInfo {
     pub name: String,
     pub is_dir: bool,

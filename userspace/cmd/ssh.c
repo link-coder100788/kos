@@ -1067,7 +1067,7 @@ static void disconnect(void) {
 // ---- main ----------------------------------------------------------------------------
 
 static void print_help(void) {
-    writeln("Usage: ssh [-p port] user@host [command]");
+    writeln("Usage: ssh [-p port] user@host [command]   (-p can also come after user@host)");
     writeln("Log in to host over SSH with a password, or run one command there.");
     writeln("Lines you type go to the remote shell; \"~.\" on its own disconnects.");
     writeln("Host keys are remembered in " KNOWN_HOSTS ".");
@@ -1089,8 +1089,13 @@ void _start(void) {
     int argc = get_argv(argv, MAX_ARGS);
     int i = 0;
     host_port = 22;
-    while (i < argc && argv[i][0] == '-') {
-        if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
+    char* destination = NULL;
+    // Options can come before or after user@host, as with OpenSSH; the
+    // command starts at the first other word after it.
+    while (i < argc && (argv[i][0] == '-' || !destination)) {
+        if (argv[i][0] != '-') {
+            destination = argv[i++];
+        } else if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
             host_port = parse_port(argv[i + 1]);
             if (host_port < 0) fail("bad port");
             i += 2;
@@ -1099,16 +1104,15 @@ void _start(void) {
             exit(0);
         }
     }
-    if (i >= argc) {
+    if (!destination) {
         print_help();
         exit(0);
     }
-    char* at = strrchr(argv[i], '@');
-    if (!at || at == argv[i] || !at[1]) fail("expected user@host");
+    char* at = strrchr(destination, '@');
+    if (!at || at == destination || !at[1]) fail("expected user@host");
     *at = '\0';
-    const char* user = argv[i];
+    const char* user = destination;
     host_name = at + 1;
-    i++;
     char command[INPUT_MAX] = "";
     for (; i < argc; i++) {
         if (command[0]) strlcpy(command + strlen(command), " ", sizeof command - strlen(command));

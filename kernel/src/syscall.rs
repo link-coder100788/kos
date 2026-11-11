@@ -258,7 +258,7 @@ pub fn syscall_filesystem(frame: &mut SyscallContext) {
     let cwd = current_cwd();
     let path = path.to_string();
     let failed = |op: &str, e: FsResponse| match e {
-        FsResponse::Err(e) => { log::debug!("{} {}: {:?}", op, path, e); fail(&format!("{}: {:?}", path, e)) }
+        FsResponse::Err(e) => { log::debug!("{} {}: {:?}", op, path, e); fail(&e.to_string()) }
         _ => { log::warn!("{} {}: unexpected response", op, path); fail("unexpected response from the filesystem") }
     };
     frame[0] = match syscall_num {
