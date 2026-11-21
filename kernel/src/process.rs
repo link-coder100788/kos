@@ -341,8 +341,13 @@ struct Process {
     name: String,
     args: String,
     task: TaskId,
-    /// Who started it; it acts as them.
+    /// Who it acts as: who started it, unless it changed (`set_uid`).
     uid: Uid,
+    /// Who started it. Only programs root started can change `uid`.
+    real_uid: Uid,
+    /// Started in the background by root, or by such a program: logging
+    /// out leaves it running (a server like sshd).
+    daemon: bool,
     /// Its task has ended; waiting to be reaped.
     exited: bool,
     console: Console,
@@ -408,6 +413,8 @@ pub struct NewProcess {
     console: Console,
     /// Who it acts as.
     uid: Uid,
+    /// See `Process::daemon`.
+    daemon: bool,
     memory: Memory,
     /// Its stdin, stdout and stderr.
     stdio: [Fd; 3],
@@ -425,12 +432,17 @@ impl NewProcess {
         }
         // A program in the background has nowhere to print or read from.
         let stdio = if console == Console::Detached { [fd::null(), fd::null(), fd::null()] } else { [fd::console(), fd::console(), fd::console()] };
-        Some(Self { name: String::from(name), args: String::new(), console, uid, memory, stdio })
+        Some(Self { name: String::from(name), args: String::new(), console, uid, daemon: false, memory, stdio })
     }
 
     /// Gives the program its stdin, stdout and stderr.
     pub fn set_stdio(&mut self, stdio: [Fd; 3]) {
         self.stdio = stdio;
+    }
+
+    /// Makes it a daemon: logging out leaves it running.
+    pub fn set_daemon(&mut self) {
+        self.daemon = true;
     }
 
     /// Gives the program its command-line arguments (`args` syscall).
@@ -464,7 +476,7 @@ impl crate::loader::ProgramMemory for NewProcess {
 /// its heap starts after that. Fails if 255 programs are already running.
 pub fn start(new: NewProcess, entry: usize, image_end: usize) -> Result<TaskId, &'static str> {
     let heap_start = (image_end + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-    let NewProcess { name, args, console, uid, memory, stdio } = new;
+    let NewProcess { name, args, console, uid, daemon, memory, stdio } = new;
     let fds = stdio.into_iter().map(Some).collect();
     let mut memory = Some(memory);
     // It's added to the table before the lock is released, so even if it
@@ -483,6 +495,8 @@ pub fn start(new: NewProcess, entry: usize, image_end: usize) -> Result<TaskId, 
             args,
             task,
             uid,
+            real_uid: uid,
+            daemon,
             exited: false,
             console,
             asid,
@@ -869,9 +883,28 @@ pub fn kill(id: TaskId) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Ends every program, whoever started it (logging out).
+/// Whether the calling program is a daemon (see `Process::daemon`).
+pub fn is_daemon() -> bool {
+    with_current(|p| p.daemon).unwrap_or(false)
+}
+
+/// Makes the calling program act as `uid` from now on, if root started
+/// it (sshd does, for whoever logs in, and goes back to root after).
+pub fn set_uid(uid: Uid) -> Result<(), &'static str> {
+    with_current(|p| {
+        if p.real_uid != crate::users::ROOT {
+            return Err("only programs root started can change who they act as");
+        }
+        p.uid = uid;
+        Ok(())
+    }).unwrap_or(Err("not a program"))?;
+    scheduler::set_current_uid(uid);
+    Ok(())
+}
+
+/// Ends every program, whoever started it (logging out), except daemons.
 pub fn kill_all() {
-    let tasks: Vec<TaskId> = TABLE.lock().processes.iter().filter(|p| !p.exited).map(|p| p.task).collect();
+    let tasks: Vec<TaskId> = TABLE.lock().processes.iter().filter(|p| !p.exited && !p.daemon).map(|p| p.task).collect();
     for id in tasks {
         set_status_of(id, STATUS_KILLED);
         scheduler::kill(id);

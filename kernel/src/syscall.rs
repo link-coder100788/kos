@@ -954,8 +954,10 @@ mod proc {
     pub const UID: u64 = 8;        // -> the uid the caller acts as
     pub const USER_NAME: u64 = 9;  // (uid, buf, max) -> the length of that account's name (or the number)
     pub const USER_ID: u64 = 10;   // (name) -> that account's uid
+    pub const USER_LOGIN: u64 = 11; // (name, password, len) -> that account's uid, if the password is right (slowly)
+    pub const SET_UID: u64 = 12;    // (uid) -> 0; act as uid from now on (only programs root started)
 
-    const_unique!(SPAWN, WAIT, KILL, SELF_ID, RUNNING, LAST_ERROR, SPAWN_IO, TASKS, UID, USER_NAME, USER_ID);
+    const_unique!(SPAWN, WAIT, KILL, SELF_ID, RUNNING, LAST_ERROR, SPAWN_IO, TASKS, UID, USER_NAME, USER_ID, USER_LOGIN, SET_UID);
 }
 
 #[syscall(13)]
@@ -1032,6 +1034,21 @@ pub fn syscall_process(frame: &mut SyscallContext) {
             Some(Some(uid)) => uid as u64,
             Some(None) => fail("no such user"),
             None => fail("bad name"),
+        },
+        proc::USER_LOGIN => {
+            let (Some(name), Some(password)) = (user_cstr(frame, frame[0]), user_bytes(frame, frame[1], frame[2])) else {
+                frame[0] = fail("bad name or password");
+                return;
+            };
+            let password = alloc::string::String::from_utf8_lossy(password).into_owned();
+            match crate::users::check_password(name, &password) {
+                Some(account) => account.uid as u64,
+                None => fail("wrong name or password"),
+            }
+        }
+        proc::SET_UID => match crate::process::set_uid(frame[0] as crate::users::Uid) {
+            Ok(()) => 0,
+            Err(e) => fail(e),
         },
         _ => { log::warn!("process syscall: unknown sub-command {}", syscall_num); u64::MAX }
     };

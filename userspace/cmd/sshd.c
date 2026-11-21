@@ -1,14 +1,15 @@
 // sshd: an SSH 2 server, so another computer can log in to KOS.
 //
-//   sshd -passwd        set the login password (do this first, in the Terminal)
 //   bg sshd [-p port]   serve on port (22 if not given) in the background
 //
+// Run it as root (`su`, then `bg sshd`): it logs people in with their KOS
+// account's name and password, then acts as them for the session, and
+// goes back to being root after. Logging out of KOS leaves it running.
 // Under QEMU, forward a port to it: `make run-gui FWD="tcp::2222-:22"`,
-// then `ssh -p 2222 anything@localhost` on this computer. There are no
-// user accounts yet, so any user name works with the password; it's kept
-// as an Argon2id hash in /.kos/ssh/sshd_password. The host key is made the
-// first time, in /.kos/ssh/sshd_host_key. A background program's output is
-// thrown away, so sshd notes what it does in /.kos/ssh/sshd.log.
+// then `ssh -p 2222 alice@localhost` on this computer. The host key is
+// made the first time, in /.kos/ssh/sshd_host_key, which only root can
+// read. A background program's output is thrown away, so sshd notes what
+// it does in /.kos/ssh/sshd.log.
 //
 // One set of algorithms, the same as ssh's and offered by every OpenSSH
 // client: key exchange curve25519-sha256, host key ssh-ed25519, cipher
@@ -33,7 +34,6 @@
 
 #define SSH_DIR "/.kos/ssh"
 #define HOST_KEY SSH_DIR "/sshd_host_key"
-#define PASSWORD_FILE SSH_DIR "/sshd_password"
 #define LOG_FILE SSH_DIR "/sshd.log"
 /// The log starts again once it's bigger than this.
 #define LOG_MAX (256 * 1024)
@@ -83,8 +83,12 @@ static void log_line(const char* fmt, ...) {
     strcat(line, "\n");
     // Shown when started with `run`; `bg` throws it away.
     write(line);
+    // The log is root's, whoever's logged in.
+    long uid = getuid();
+    set_uid(0);
     if (fs_size(LOG_FILE) > LOG_MAX) fs_remove(LOG_FILE);
     fs_append(LOG_FILE, line, strlen(line));
+    set_uid(uid);
 }
 
 // ---- getting back to the accept loop ----------------------------------------------------
@@ -306,7 +310,6 @@ typedef struct {
 static uint8_t host_seed[32];
 /// The host key as SSH sends it: "ssh-ed25519" and the public key.
 static buf_t host_blob;
-static char password_hash[256];
 
 static struct {
     long tcp;
@@ -662,6 +665,8 @@ static void kex(const uint8_t* client_kexinit, size_t client_kexinit_len) {
 // ---- logging in --------------------------------------------------------------------
 
 static char user[64];
+static char cwd[512];
+static bool is_dir(const char* path);
 
 static void auth_failure(void) {
     buf_t b = {0};
@@ -711,10 +716,16 @@ static void log_in(void) {
         bool change = get_u8(&r);
         uint32_t len;
         const uint8_t* password = get_string(&r, &len);
-        bool ok = !r.bad && !change && argon2id_verify((const char*)password, len, password_hash);
+        long uid = !r.bad && !change ? user_login(user, (const char*)password, len) : -1;
         // Wipe the password from the packet.
         memset(p.data, 0, p.len);
-        if (ok) {
+        if (uid >= 0) {
+            // From here on, act as them, at home.
+            if (set_uid(uid) < 0) disconnect(DISCONNECT_BY_APPLICATION, "sshd can't act as that user");
+            char home[96];
+            if (uid == 0) snprintf(home, sizeof home, "/root");
+            else snprintf(home, sizeof home, "/home/%s", user);
+            if (is_dir(home)) snprintf(cwd, sizeof cwd, "%s", home);
             buf_t b = {0};
             put_u8(&b, MSG_USERAUTH_SUCCESS);
             send_packet(&b);
@@ -723,7 +734,7 @@ static void log_in(void) {
             log_line("%s: logged in as %s", client, user);
             return;
         }
-        log_line("%s: wrong password for %s", client, user);
+        log_line("%s: wrong name or password for %s", client, user);
         if (++tries >= PASSWORD_TRIES) disconnect(DISCONNECT_NO_MORE_AUTH_METHODS, "too many wrong passwords");
         auth_failure();
     }
@@ -1867,6 +1878,8 @@ static void reset(void) {
 static void load_host_key(void) {
     fs_mkdir("/.kos");
     fs_mkdir(SSH_DIR);
+    // Only root may see the host key and the log.
+    if (fs_chmod(SSH_DIR, 0, 0) < 0) fail("can't make " SSH_DIR " private");
     if (fs_read(HOST_KEY, host_seed, sizeof host_seed) != sizeof host_seed) {
         if (random_bytes(host_seed, sizeof host_seed) < 0) fail("can't make a host key: no random numbers (under ACCEL=hvf there are none yet)");
         if (fs_write(HOST_KEY, host_seed, sizeof host_seed) < 0) fail("can't save the host key");
@@ -1884,55 +1897,21 @@ static void load_host_key(void) {
     log_line("sshd: host key ED25519 SHA256:%s", fingerprint);
 }
 
-static void set_password(void) {
-    char first[256], second[256];
-    write("New password: ");
-    long n = readln(first, sizeof first - 1);
-    first[n < 0 ? 0 : n] = '\0';
-    write("Again: ");
-    n = readln(second, sizeof second - 1);
-    second[n < 0 ? 0 : n] = '\0';
-    if (!first[0]) {
-        writeln("sshd: no password given (run sshd -passwd in the Terminal, not with bg)");
-        return;
-    }
-    if (strcmp(first, second) != 0) {
-        writeln("sshd: the passwords don't match");
-        return;
-    }
-    writeln("Hashing...");
-    char hash[256];
-    long len = argon2id_hash(first, strlen(first), hash, sizeof hash);
-    memset(first, 0, sizeof first);
-    memset(second, 0, sizeof second);
-    fs_mkdir("/.kos");
-    fs_mkdir(SSH_DIR);
-    if (len < 0 || fs_write(PASSWORD_FILE, hash, len) < 0) {
-        printf("sshd: couldn't save the password: %s\n", last_error());
-        return;
-    }
-    writeln("Password set. Start the server with: bg sshd");
-}
-
 void _start(void) {
     char* argv[8];
     int argc = get_argv(argv, 8);
     int port = DEFAULT_PORT;
-    if (argc == 1 && strcmp(argv[0], "-passwd") == 0) {
-        set_password();
-        exit(0);
-    }
     if (argc == 2 && strcmp(argv[0], "-p") == 0) {
         port = atoi(argv[1]);
     } else if (argc != 0) {
-        writeln("Usage: sshd -passwd        set the login password (in the Terminal)");
-        writeln("       bg sshd [-p port]   serve SSH on port (22 if not given)");
+        writeln("Usage: bg sshd [-p port]   serve SSH on port (22 if not given), as root");
         exit(0);
     }
     if (port < 1 || port > 65535) fail("bad port");
-    long hash_len = fs_read(PASSWORD_FILE, password_hash, sizeof password_hash - 1);
-    if (hash_len <= 0 || hash_len >= (long)sizeof password_hash) fail("no password set: run sshd -passwd in the Terminal first");
-    password_hash[hash_len] = '\0';
+    if (getuid() != 0) {
+        writeln("sshd: run it as root (su, then bg sshd), so it can log people in as themselves");
+        exit(1);
+    }
     load_host_key();
     long listener = tcp_listen(port);
     if (listener < 0) {
@@ -1953,6 +1932,7 @@ void _start(void) {
         in_session = true;
         if (set_jump_point(session_over) == 0) serve();
         in_session = false;
+        set_uid(0);
         end_programs();
         tcp_close(conn);
     }

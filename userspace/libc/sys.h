@@ -42,7 +42,7 @@
 //   11   random         random_bytes
 //   12   network        http_*, ping, net_address, tcp_*, udp_* (net.h)
 //   13   processes      spawn, proc_*, last_error, getuid,
-//                       user_name, user_id
+//                       user_name, user_id, user_login, set_uid
 //   14   system info    uname
 //   15   crypto         sha256, sha512, hmac_sha256, aes_gcm_* (crypto.h)
 //   16   sound          snd, beep, play, play_file, snd_stop, snd_busy
@@ -143,6 +143,15 @@ long user_name(long uid, char* buf, size_t max);
 
 // The uid of the account called name, or -1.
 long user_id(const char* name);
+
+// Checks name's password (slowly, on purpose: a second more when it's
+// wrong). Returns their uid if it's right, else -1.
+long user_login(const char* name, const char* password, size_t len);
+
+// Acts as uid from now on: what it can read and write, and who the
+// programs it starts belong to. Only programs root started may (sshd does,
+// for whoever logs in, and goes back to root after). Returns 0 or -1.
+long set_uid(long uid);
 
 // ---- time ------------------------------------------------------------------
 // See time.h for dates.

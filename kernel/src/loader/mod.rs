@@ -34,6 +34,8 @@ struct Job {
     stdio: Option<[Fd; 3]>,
     /// Who it runs as: whoever asked for it.
     uid: Uid,
+    /// Logging out leaves it running (see `process::NewProcess::set_daemon`).
+    daemon: bool,
 }
 
 static JOBS: IrqMutex<VecDeque<Job>> = IrqMutex::new(VecDeque::new());
@@ -41,7 +43,10 @@ static JOBS: IrqMutex<VecDeque<Job>> = IrqMutex::new(VecDeque::new());
 static FOREGROUND_PENDING: AtomicBool = AtomicBool::new(false);
 
 fn queue(path: String, args: String, console: Console) {
-    JOBS.lock().push_back(Job { path, args, console, stdio: None, uid: crate::scheduler::current_uid() });
+    let uid = crate::scheduler::current_uid();
+    // Root's background programs are servers that outlive a session.
+    let daemon = console == Console::Detached && uid == crate::users::ROOT;
+    JOBS.lock().push_back(Job { path, args, console, stdio: None, uid, daemon });
     // The loader task waits on the same queue as programs exiting.
     process::EXITED.wake_all();
 }
@@ -117,14 +122,16 @@ fn start(job: &Job) -> Result<TaskId, String> {
     log::debug!("{}: {} byte image", job.path, image.len());
     let name = job.path.rsplit('/').next().unwrap_or(&job.path);
     let name = name.trim_end_matches(".b64").trim_end_matches(".elf").trim_end_matches(".kbin");
-    start_image(name, &job.args, &image, job.path.ends_with(".kbin"), job.console, job.stdio.clone(), job.uid)
+    start_image(name, &job.args, &image, job.path.ends_with(".kbin"), job.console, job.stdio.clone(), job.uid, job.daemon)
 }
 
 /// Loads and starts program `path` straight away (for a program's
 /// `spawn`), returning its task id. `stdio` is its stdin, stdout and
-/// stderr; without it, it gets what `console` says. It runs as the caller.
+/// stderr; without it, it gets what `console` says. It runs as the
+/// caller, and is a daemon if the caller is.
 pub fn spawn(path: &str, args: &str, console: Console, stdio: Option<[Fd; 3]>) -> Result<TaskId, String> {
-    start(&Job { path: String::from(path), args: String::from(args), console, stdio, uid: crate::scheduler::current_uid() })
+    let (uid, daemon) = (crate::scheduler::current_uid(), process::is_daemon());
+    start(&Job { path: String::from(path), args: String::from(args), console, stdio, uid, daemon })
 }
 
 /// Somewhere to load a program: the ELF and K loaders write through this.
@@ -137,10 +144,13 @@ pub trait ProgramMemory {
 }
 
 /// Starts a program from an ELF (or, if `kbin`, a K program) in memory,
-/// acting as `uid`.
-pub fn start_image(name: &str, args: &str, image: &[u8], kbin: bool, console: Console, stdio: Option<[Fd; 3]>, uid: Uid) -> Result<TaskId, String> {
+/// acting as `uid`; a `daemon` keeps running when its user logs out.
+pub fn start_image(name: &str, args: &str, image: &[u8], kbin: bool, console: Console, stdio: Option<[Fd; 3]>, uid: Uid, daemon: bool) -> Result<TaskId, String> {
     use alloc::format;
     let mut new = NewProcess::new(name, console, uid).ok_or("out of memory")?;
+    if daemon {
+        new.set_daemon();
+    }
     new.set_args(args);
     if let Some(stdio) = stdio {
         new.set_stdio(stdio);

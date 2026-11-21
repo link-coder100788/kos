@@ -330,6 +330,14 @@ long user_id(const char* name) {
     return (long)SVC(0xd, 10, name, 0, 0, 0);
 }
 
+long user_login(const char* name, const char* password, size_t len) {
+    return (long)SVC(0xd, 11, name, password, len, 0);
+}
+
+long set_uid(long uid) {
+    return (long)SVC(0xd, 12, uid, 0, 0, 0);
+}
+
 // ---- file descriptors --------------------------------------------------------------
 
 long fd_open(const char* path, int flags) {

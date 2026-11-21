@@ -68,7 +68,7 @@ fn kbin(code: &[u32]) -> Vec<u8> {
 }
 
 fn start(code: &[u32]) -> TaskId {
-    loader::start_image("test", "", &kbin(code), true, Console::Detached, None, scheduler::current_uid()).expect("starting a test program")
+    loader::start_image("test", "", &kbin(code), true, Console::Detached, None, scheduler::current_uid(), false).expect("starting a test program")
 }
 
 fn running(id: TaskId) -> bool {
@@ -350,7 +350,7 @@ fn status_within(id: TaskId, ms: u64) -> i32 {
 
 /// Starts `code` with `stdio` as its stdin, stdout and stderr.
 fn start_with(code: &[u32], stdio: [crate::fd::Fd; 3]) -> TaskId {
-    loader::start_image("test", "", &kbin(code), true, Console::Detached, Some(stdio), scheduler::current_uid()).expect("starting a test program")
+    loader::start_image("test", "", &kbin(code), true, Console::Detached, Some(stdio), scheduler::current_uid(), false).expect("starting a test program")
 }
 
 fn test_exit_status() {
