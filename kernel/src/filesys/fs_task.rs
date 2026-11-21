@@ -106,8 +106,10 @@ fn load_perms(fs: &mut ActiveFs) -> Perms {
     }
 }
 
-fn save_perms(fs: &mut ActiveFs, perms: &Perms) {
+fn save_perms(fs: &mut ActiveFs, perms: &mut Perms) {
     let _ = fs.mkdir("/", "/.kos");
+    // Only root sees what's private.
+    perms.set(PERMS_FILE, Attrs { owner: ROOT, read: false, write: false });
     if let Err(e) = fs.write_file("/", PERMS_FILE, perms.to_text().as_bytes()) {
         log::error!("can't save {}: {:?}", PERMS_FILE, e);
     }

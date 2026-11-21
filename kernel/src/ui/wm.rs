@@ -407,6 +407,12 @@ impl Wm {
         match req {
             Request::Open { id, app } => self.open(id, app),
             Request::Close(id) => self.close(id),
+            Request::CloseAllButTerminal => {
+                let others: Vec<WindowId> = self.windows.iter().filter(|w| w.app.title() != "Terminal").map(|w| w.id).collect();
+                for id in others {
+                    self.close(id);
+                }
+            }
         }
     }
 

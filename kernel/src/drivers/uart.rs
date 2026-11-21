@@ -109,6 +109,15 @@ impl Uart {
     /// Like `read_s`, but gives up (returning None) once `stop()` is true.
     /// `stop` runs with IRQs masked, like a `WaitQueue` condition.
     pub fn read_s_unless(&self, stop: impl Fn() -> bool) -> Option<String> {
+        self.read_line(true, stop)
+    }
+
+    /// Reads a line without showing what's typed, for passwords.
+    pub fn read_secret(&self) -> String {
+        self.read_line(false, || false).unwrap()
+    }
+
+    fn read_line(&self, echo: bool, stop: impl Fn() -> bool) -> Option<String> {
         let mut s = String::new();
         loop {
             let b = self.read_b_unless(&stop)?;
@@ -129,7 +138,7 @@ impl Uart {
                     return Some(s);
                 }
                 0x7f | 0x08 => {
-                    if s.pop().is_some() {
+                    if s.pop().is_some() && echo {
                         crate::print!("\x08 \x08");
                     }
                 }
@@ -141,7 +150,9 @@ impl Uart {
                 }
                 0x20..=0x7e => {
                     s.push(b as char);
-                    crate::print!("{}", b as char);
+                    if echo {
+                        crate::print!("{}", b as char);
+                    }
                 }
                 _ => {}
             }

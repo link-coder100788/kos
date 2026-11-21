@@ -35,6 +35,14 @@ fn set_cwd(path: String) {
     *SHELL_CWD.lock() = path;
 }
 
+/// Makes `path` the current directory, if it can be; else `/`.
+pub fn go_to(path: &str) {
+    match fs_call(FsRequest::ChangeDir { cwd: "/".to_string(), path: path.to_string() }) {
+        FsResponse::Path(p) => set_cwd(p),
+        _ => set_cwd(String::new()),
+    }
+}
+
 /// Where system commands (userspace/cmd/) live on the disk.
 pub const BIN_DIR: &str = "/bin";
 /// Where the userspace programs (userspace/prog/) live: the Programs window
@@ -141,13 +149,14 @@ impl ShellCommand {
                 println!("Network: net, ping <host>, dns <host or url>, fetch <url>, browse [url]");
                 println!("Sound: beep, snd <hz> (snd 0 stops), play <notes or file.wav> (e.g. play T140 O4 C D E F G2)");
                 println!("Assistant: kai <request> (try `kai` alone), kai --debug <request>");
-                println!("Debugging: log [target level], dmesg [count] [text], stats");
-                println!("System: mmu [addr], heap_remain, heap_test, load [seconds]");
+                println!("Users: su [name] (exit goes back), logout, passwd [name], useradd <name>, userdel <name>");
+                println!("Debugging (root): log [target level], dmesg [count] [text]; stats");
+                println!("System (root): mmu [addr], heap_remain, heap_test, load [seconds]");
                 println!("  help");
             }
             ShellCommand::Cd(path) => match fs_call(FsRequest::ChangeDir { cwd: cwd.clone(), path: path.clone() }) {
                 FsResponse::Path(new_cwd) => set_cwd(new_cwd),
-                FsResponse::Err(e) => { println!("cd: err: {:?}", e); },
+                FsResponse::Err(e) => { println!("cd: {}: {}", path, e); },
                 _ => { println!("cd: unexpected response"); },
             },
             ShellCommand::Write(path, content) => {

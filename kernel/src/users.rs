@@ -27,8 +27,8 @@ const FIRST_USER: Uid = 1000;
 
 pub const USERS_FILE: &str = "/.kos/users";
 
-/// Who the session acts as.
-static SESSION: AtomicU32 = AtomicU32::new(ROOT);
+/// Who the session acts as: nobody until someone logs in.
+static SESSION: AtomicU32 = AtomicU32::new(NOBODY);
 
 pub fn session_uid() -> Uid {
     SESSION.load(Ordering::Acquire)
@@ -75,9 +75,14 @@ pub fn all() -> Vec<Account> {
 fn save(accounts: &[Account]) -> Result<(), String> {
     let _ = fs_call_as(ROOT, FsRequest::Mkdir { cwd: "/".into(), path: "/.kos".into() });
     match fs_call_as(ROOT, FsRequest::Write { cwd: "/".into(), path: USERS_FILE.into(), data: to_text(accounts).into_bytes() }) {
-        FsResponse::Ok => Ok(()),
-        FsResponse::Err(e) => Err(format!("can't save {}: {}", USERS_FILE, e)),
-        _ => Err(format!("can't save {}", USERS_FILE)),
+        FsResponse::Ok => {}
+        FsResponse::Err(e) => return Err(format!("can't save {}: {}", USERS_FILE, e)),
+        _ => return Err(format!("can't save {}", USERS_FILE)),
+    }
+    // Only root may read the hashes.
+    match fs_call_as(ROOT, FsRequest::Chmod { cwd: "/".into(), path: USERS_FILE.into(), read: Some(false), write: Some(false) }) {
+        FsResponse::Err(e) => Err(format!("can't make {} private: {}", USERS_FILE, e)),
+        _ => Ok(()),
     }
 }
 

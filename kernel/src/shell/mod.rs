@@ -3,17 +3,24 @@
 //! command. While a program started with `run` is going, the shell waits
 //! for it, and the program reads the console itself (`readln`). Programs
 //! can be joined into pipelines and sent to files (see `fs`).
+//!
+//! Nothing runs until someone logs in (the first boot sets up the root
+//! account and a first user instead). The shell, the desktop and K-AI
+//! then act as that user; `su` acts as someone else until `exit`, and
+//! `logout` ends their programs and windows and asks again.
 
 pub mod fs;
 
 use alloc::borrow::ToOwned;
 use alloc::string::String;
+use alloc::vec::Vec;
 use crate::arch::stacktrace::RegisterDump;
 use crate::arch::timer::Instant;
 use crate::drivers::uart::Uart;
 use crate::mm::allocator::ALLOCATOR;
 use crate::println;
 use crate::std::thread;
+use crate::users::{self, Uid, ROOT};
 use crate::util;
 
 enum UartCommand<'a> {
@@ -110,6 +117,14 @@ impl<'a> UartCommand<'a> {
             "beep" => Some(UartCommand::Beep),
             _ => Some(UartCommand::ShellCommand(fs::ShellCommand::parse(s).unwrap_or(fs::ShellCommand::Help))),
         }
+    }
+
+    /// Kernel debugging commands, which only root may use.
+    fn root_only(&self) -> bool {
+        matches!(self, UartCommand::HeapRemain | UartCommand::LastAllocs | UartCommand::OverflowHeap(_)
+            | UartCommand::TestThreadTask | UartCommand::TestAsyncTask | UartCommand::DumpRegs | UartCommand::AllDump
+            | UartCommand::TestCoreRestart | UartCommand::HeapTest | UartCommand::Log(_) | UartCommand::Dmesg(_)
+            | UartCommand::Mmu(_) | UartCommand::Load(_))
     }
 
     fn execute(&self) {
@@ -318,16 +333,205 @@ impl<'a> UartCommand<'a> {
     }
 }
 
+// ---- logging in ----------------------------------------------------------------
+
+/// Who's logged in, then whoever `su` made the session act as on top of
+/// that: the last one is who it acts as now.
+type Logins = Vec<(Uid, String)>;
+
+/// Asks for a new password twice, until it's the same both times.
+fn new_password(uart: &Uart, whose: &str) -> String {
+    loop {
+        crate::print!("new password for {}: ", whose);
+        let first = uart.read_secret();
+        if first.is_empty() {
+            println!("a password can't be empty");
+            continue;
+        }
+        crate::print!("again: ");
+        if uart.read_secret() == first {
+            return first;
+        }
+        println!("those weren't the same");
+    }
+}
+
+/// The first boot: makes the root account and a first user, who's then
+/// logged in. Without a disk to keep them on, it's root, with no password.
+fn set_up(uart: &Uart) -> (Uid, String) {
+    println!("Welcome to KOS. First, its accounts: root, who can do anything, and yours.");
+    let password = new_password(uart, "root");
+    if let Err(e) = users::add("root", &password) {
+        println!("can't set up accounts ({}); you're root until there's a disk", e);
+        return (ROOT, String::from("root"));
+    }
+    loop {
+        crate::print!("your user name: ");
+        let name = uart.read_s();
+        let name = name.trim();
+        if !users::valid_name(name) || name == "root" {
+            println!("names are 1-16 lower-case letters, digits, _ or -, starting with a letter (and not root)");
+            continue;
+        }
+        let password = new_password(uart, name);
+        match users::add(name, &password) {
+            Ok(account) => {
+                println!("Done. Your files go in {}; type 'help' for commands.", account.home);
+                return (account.uid, account.name);
+            }
+            Err(e) => println!("can't add {}: {}", name, e),
+        }
+    }
+}
+
+/// Asks for a name and password until they're right (or sets KOS up, the
+/// first time), and returns who logged in.
+fn log_in(uart: &Uart) -> (Uid, String) {
+    if !users::any() {
+        return set_up(uart);
+    }
+    loop {
+        crate::print!("login: ");
+        let name = uart.read_s();
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        crate::print!("password: ");
+        let password = uart.read_secret();
+        match users::check_password(name, &password) {
+            Some(account) => return (account.uid, account.name),
+            None => println!("wrong name or password"),
+        }
+    }
+}
+
+/// Makes the session act as the last of `logins`, in their home folder.
+fn become_last(logins: &Logins) {
+    let (uid, name) = logins.last().unwrap();
+    users::set_session_uid(*uid);
+    let home = users::lookup(name).map_or(String::from("/"), |a| a.home);
+    fs::go_to(&home);
+}
+
+/// Ends the programs of everyone in `logins` and closes the desktop's
+/// windows (but the Terminal), then forgets them.
+fn log_out(logins: &mut Logins) {
+    for p in crate::process::list() {
+        if logins.iter().any(|(uid, _)| *uid == p.uid) {
+            let _ = crate::process::kill(p.task);
+        }
+    }
+    crate::ui::window::close_all_but_terminal();
+    logins.clear();
+    users::set_session_uid(users::NOBODY);
+    fs::go_to("/");
+    println!("logged out");
+}
+
+/// `useradd`, `userdel`, `passwd`, `su`, `exit` and `logout`. Returns
+/// whether `line` was one of them.
+fn session_command(uart: &Uart, line: &str, logins: &mut Logins) -> bool {
+    let (cmd, arg) = match line.split_once(' ') {
+        Some((c, a)) => (c, a.trim()),
+        None => (line, ""),
+    };
+    let (me, my_name) = logins.last().cloned().unwrap();
+    match cmd {
+        "logout" => log_out(logins),
+        "exit" if logins.len() > 1 => {
+            logins.pop();
+            become_last(logins);
+        }
+        "exit" => log_out(logins),
+        "su" => {
+            let name = if arg.is_empty() { "root" } else { arg };
+            let account = if me == ROOT {
+                users::lookup(name)
+            } else {
+                crate::print!("password for {}: ", name);
+                users::check_password(name, &uart.read_secret())
+            };
+            match account {
+                Some(a) => {
+                    logins.push((a.uid, a.name));
+                    become_last(logins);
+                }
+                None if me == ROOT => println!("su: no account named {}", name),
+                None => println!("su: wrong name or password"),
+            }
+        }
+        "passwd" => {
+            let name = if arg.is_empty() { my_name.as_str() } else { arg };
+            if me != ROOT && name != my_name {
+                println!("passwd: only root can change someone else's password");
+                return true;
+            }
+            if users::lookup(name).is_none() {
+                println!("passwd: no account named {}", name);
+                return true;
+            }
+            if me != ROOT {
+                crate::print!("current password: ");
+                if users::check_password(name, &uart.read_secret()).is_none() {
+                    println!("passwd: that's not it");
+                    return true;
+                }
+            }
+            let password = new_password(uart, name);
+            match users::set_password(name, &password) {
+                Ok(()) => println!("changed {}'s password", name),
+                Err(e) => println!("passwd: {}", e),
+            }
+        }
+        "useradd" | "userdel" if me != ROOT => println!("{}: only root can do that (try su)", cmd),
+        "useradd" | "userdel" if arg.is_empty() => println!("{}: usage: {} <name>", cmd, cmd),
+        "useradd" => {
+            if users::lookup(arg).is_some() {
+                println!("useradd: {} already exists", arg);
+                return true;
+            }
+            if !users::valid_name(arg) {
+                println!("useradd: names are 1-16 lower-case letters, digits, _ or -, starting with a letter");
+                return true;
+            }
+            let password = new_password(uart, arg);
+            match users::add(arg, &password) {
+                Ok(a) => println!("added {} (uid {}, home {})", a.name, a.uid, a.home),
+                Err(e) => println!("useradd: {}", e),
+            }
+        }
+        "userdel" => {
+            if logins.iter().any(|(_, n)| n == arg) {
+                println!("userdel: {} is logged in", arg);
+                return true;
+            }
+            match users::remove(arg) {
+                Ok(a) => println!("removed {}; {} is still there", a.name, a.home),
+                Err(e) => println!("userdel: {}", e),
+            }
+        }
+        _ => return false,
+    }
+    true
+}
+
 pub extern "C" fn uart_read_task() -> ! {
     let uart = Uart {};
     crate::scheduler::follow_session();
     crate::filesys::fs_task::wait_until_ready();
     println!("KOS shell. Type 'help' for commands.");
+    let mut logins = Logins::new();
     loop {
+        if logins.is_empty() {
+            logins.push(log_in(&uart));
+            become_last(&logins);
+        }
         if crate::assistant::awaiting_answer() {
             crate::print!("yes/no> ");
         } else {
-            crate::print!("kos:{}> ", fs::current_cwd());
+            let (uid, name) = logins.last().unwrap();
+            crate::print!("{}@kos:{}{} ", name, fs::current_cwd(), if *uid == ROOT { "#" } else { ">" });
         }
         let s = uart.read_s();
         if crate::assistant::awaiting_answer() {
@@ -336,11 +540,15 @@ pub extern "C" fn uart_read_task() -> ! {
         }
         if !s.is_empty() {
             log::debug!("command: {}", s);
-            if fs::run_pipeline(&s) {
+            if session_command(&uart, s.trim(), &mut logins) || fs::run_pipeline(&s) {
                 continue;
             }
             if let Some(command) = UartCommand::parse(&s) {
-                command.execute();
+                if command.root_only() && logins.last().unwrap().0 != ROOT {
+                    println!("only root can do that (try su)");
+                } else {
+                    command.execute();
+                }
             }
         }
     }
