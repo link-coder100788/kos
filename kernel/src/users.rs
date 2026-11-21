@@ -6,8 +6,9 @@
 //! Every task acts as some uid (`scheduler::current_uid`), and fs_task
 //! checks each request against it (see `filesys::perms`). Programs act as
 //! whoever started them. The console shell, the desktop and K-AI act as
-//! the session's user: one session, shared by the serial console and the
-//! Terminal, changed by logging in, `su` and `logout`.
+//! the session's user: one session, shared by the serial console, the
+//! Terminal and the desktop's Login window, changed by logging in, `su`
+//! and logging out.
 
 use alloc::format;
 use alloc::string::String;
@@ -34,9 +35,25 @@ pub fn session_uid() -> Uid {
     SESSION.load(Ordering::Acquire)
 }
 
+/// Makes the session act as `uid`, and lets the shell and the desktop
+/// know (logging in on one logs in both).
 pub fn set_session_uid(uid: Uid) {
     log::info!("session is now uid {}", uid);
     SESSION.store(uid, Ordering::Release);
+    crate::drivers::uart::wake_reader();
+    crate::ui::task::wake_ui();
+}
+
+/// Whether someone is logged in.
+pub fn logged_in() -> bool {
+    session_uid() != NOBODY
+}
+
+/// Ends the session: every program (they were all started in it) ends,
+/// and the shell and the desktop ask for a login again.
+pub fn log_out() {
+    crate::process::kill_all();
+    set_session_uid(NOBODY);
 }
 
 #[derive(Clone)]

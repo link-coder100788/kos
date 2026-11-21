@@ -385,20 +385,27 @@ fn set_up(uart: &Uart) -> (Uid, String) {
 }
 
 /// Asks for a name and password until they're right (or sets KOS up, the
-/// first time), and returns who logged in.
+/// first time), and returns who logged in: here, or on the desktop's
+/// Login window meanwhile.
 fn log_in(uart: &Uart) -> (Uid, String) {
     if !users::any() {
         return set_up(uart);
     }
+    let on_desktop = || {
+        let uid = users::session_uid();
+        println!();
+        println!("logged in on the desktop as {}", users::name_of(uid));
+        (uid, users::name_of(uid))
+    };
     loop {
         crate::print!("login: ");
-        let name = uart.read_s();
+        let Some(name) = uart.read_s_unless(users::logged_in) else { return on_desktop() };
         let name = name.trim();
         if name.is_empty() {
             continue;
         }
         crate::print!("password: ");
-        let password = uart.read_secret();
+        let Some(password) = uart.read_secret_unless(users::logged_in) else { return on_desktop() };
         match users::check_password(name, &password) {
             Some(account) => return (account.uid, account.name),
             None => println!("wrong name or password"),
@@ -414,17 +421,10 @@ fn become_last(logins: &Logins) {
     fs::go_to(&home);
 }
 
-/// Ends the programs of everyone in `logins` and closes the desktop's
-/// windows (but the Terminal), then forgets them.
+/// Ends the session (see `users::log_out`), and forgets who was in it.
 fn log_out(logins: &mut Logins) {
-    for p in crate::process::list() {
-        if logins.iter().any(|(uid, _)| *uid == p.uid) {
-            let _ = crate::process::kill(p.task);
-        }
-    }
-    crate::ui::window::close_all_but_terminal();
+    users::log_out();
     logins.clear();
-    users::set_session_uid(users::NOBODY);
     fs::go_to("/");
     println!("logged out");
 }
@@ -533,7 +533,14 @@ pub extern "C" fn uart_read_task() -> ! {
             let (uid, name) = logins.last().unwrap();
             crate::print!("{}@kos:{}{} ", name, fs::current_cwd(), if *uid == ROOT { "#" } else { ">" });
         }
-        let s = uart.read_s();
+        // Logging out on the desktop ends the line.
+        let Some(s) = uart.read_s_unless(|| !users::logged_in()) else {
+            println!();
+            logins.clear();
+            fs::go_to("/");
+            println!("logged out on the desktop");
+            continue;
+        };
         if crate::assistant::awaiting_answer() {
             crate::assistant::answer(&s);
             continue;

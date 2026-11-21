@@ -34,8 +34,6 @@ pub enum WindowEvent {
 pub enum Request {
     Open { id: WindowId, app: Box<dyn App> },
     Close(WindowId),
-    /// Closes every window but the Terminal (logging out).
-    CloseAllButTerminal,
 }
 
 static NEXT_ID: AtomicU32 = AtomicU32::new(1);
@@ -68,11 +66,6 @@ pub fn open_window(title: &str, elements: Vec<WindowElementDesc>) -> WindowId {
 
 pub fn close_window(id: WindowId) {
     request(Request::Close(id));
-}
-
-/// Closes every window but the Terminal, when the session's user logs out.
-pub fn close_all_but_terminal() {
-    request(Request::CloseAllButTerminal);
 }
 
 /// Pops the oldest pending event for a window, if any.

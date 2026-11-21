@@ -29,8 +29,26 @@ pub extern "C" fn ui_task() -> ! {
         }
     }
     let mut wm = Wm::new();
-    wm.open(window::next_id(), Box::new(apps::terminal::Terminal::new()));
+    crate::filesys::fs_task::wait_until_ready();
+    let mut logged_in = None;
     loop {
+        // Logging in (here or at the console) opens the desktop; logging
+        // out closes everything and asks again.
+        let now = crate::users::logged_in();
+        if logged_in != Some(now) || (!now && !wm.has_windows()) {
+            if logged_in != Some(now) {
+                wm.close_all();
+            }
+            logged_in = Some(now);
+            wm.set_locked(!now);
+            // Before the first account exists, the Terminal sets KOS up.
+            let app: Box<dyn apps::App> = if now || !crate::users::any() {
+                Box::new(apps::terminal::Terminal::new())
+            } else {
+                Box::new(apps::login::Login::new())
+            };
+            wm.open(window::next_id(), app);
+        }
         for request in window::take_requests() {
             wm.handle_request(request);
         }

@@ -63,6 +63,12 @@ fn uart_irq() {
     RX_WAIT.wake_all();
 }
 
+/// Wakes whoever is reading the console, to look at their `stop`
+/// condition again (see `Uart::read_s_unless`).
+pub fn wake_reader() {
+    RX_WAIT.wake_all();
+}
+
 /// Delivers a byte typed into the Terminal window to the console reader,
 /// as if it had come in over the serial port. UI task only.
 pub fn feed_input(byte: u8) {
@@ -115,6 +121,11 @@ impl Uart {
     /// Reads a line without showing what's typed, for passwords.
     pub fn read_secret(&self) -> String {
         self.read_line(false, || false).unwrap()
+    }
+
+    /// `read_secret`, giving up (None) once `stop()` is true.
+    pub fn read_secret_unless(&self, stop: impl Fn() -> bool) -> Option<String> {
+        self.read_line(false, stop)
     }
 
     fn read_line(&self, echo: bool, stop: impl Fn() -> bool) -> Option<String> {

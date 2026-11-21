@@ -6,6 +6,7 @@ pub mod browser;
 pub mod canvas;
 pub mod image;
 pub mod kai;
+pub mod login;
 pub mod paint;
 pub mod programs;
 pub mod taskmgr;

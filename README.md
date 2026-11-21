@@ -180,9 +180,9 @@ Underneath, `kernel/src/drivers/virtio/snd.rs` drives QEMU's virtio-sound device
 
 ### Users
 
-KOS has user accounts, and nothing runs until someone logs in on the console (the serial port or the Terminal: they share one session). The first boot of a new disk sets up two accounts instead: `root`, who can do anything, and yours. Passwords are hashed with Argon2id. Your files go in `/home/<name>` (root's in `/root`), which only you can see into.
+KOS has user accounts, and nothing runs until someone logs in: in the desktop's Login window, or on the console (the serial port). They share one session, so logging in on either logs in both. The first boot of a new disk sets up two accounts instead, in the Terminal: `root`, who can do anything, and yours. Passwords are hashed with Argon2id. Your files go in `/home/<name>` (root's in `/root`), which only you can see into.
 
-The shell, the desktop and K-AI act as whoever is logged in, and a program acts as whoever started it: it can read and write only what they can, and only they (or root) can end it. `su [name]` acts as someone else until `exit`; `logout` ends that session's programs, closes the desktop's windows and asks again. Kernel debugging commands (`log`, `dmesg`, `mmu`, `heap_test`, ...) are root's.
+The shell, the desktop and K-AI act as whoever is logged in, and a program acts as whoever started it: it can read and write only what they can, and only they (or root) can end it. `su [name]` acts as someone else until `exit`. `logout` in the shell, or **Log out** in the KOS menu, ends every program, closes the desktop's windows and asks again. Kernel debugging commands (`log`, `dmesg`, `mmu`, `heap_test`, ...) are root's.
 
 Permissions are simpler than Unix's: no groups and no execute bit. Each file and folder has an owner, who may always read and write it, and two flags for everyone else: `r`, others may read it (a folder: look inside), and `w`, others may write it (a folder: add and remove things in it). Something without its own setting has its folder's, so `chmod -rw ~/diary` makes everything in it private, and a private folder hides all that's inside. What you make in a folder that isn't yours is yours, readable if the folder is, not writable by others. Everything outside the home folders is root's and readable by everyone.
 

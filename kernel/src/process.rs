@@ -869,6 +869,15 @@ pub fn kill(id: TaskId) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Ends every program, whoever started it (logging out).
+pub fn kill_all() {
+    let tasks: Vec<TaskId> = TABLE.lock().processes.iter().filter(|p| !p.exited).map(|p| p.task).collect();
+    for id in tasks {
+        set_status_of(id, STATUS_KILLED);
+        scheduler::kill(id);
+    }
+}
+
 /// Whether all of `ptr..ptr+len` is mapped in the calling program's
 /// address space (growing the stack first if it's on the stack). During
 /// its syscalls TTBR0 holds that address space, so the kernel can then

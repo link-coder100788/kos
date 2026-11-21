@@ -42,15 +42,16 @@ const MENU_W: i32 = 170;
 const TITLE_FOCUSED: (u32, u32) = (rgb(0x4a, 0x84, 0xc4), rgb(0x2c, 0x5a, 0x92));
 const TITLE_UNFOCUSED: (u32, u32) = (rgb(0x7a, 0x7f, 0x8a), rgb(0x5c, 0x61, 0x6b));
 
-/// Entries in the KOS menu.
-const MENU: [(&str, fn() -> Box<dyn App>); 7] = [
-    ("Terminal", || Box::new(apps::terminal::Terminal::new())),
-    ("Browser", || Box::new(apps::browser::Browser::new())),
-    ("Programs", || Box::new(apps::programs::Programs::new())),
-    ("Task Manager", || Box::new(apps::taskmgr::TaskManager::new())),
-    ("Paint", || Box::new(apps::paint::Paint::new())),
-    ("K-AI", || Box::new(apps::kai::KAI::new())),
-    ("About KOS", || Box::new(apps::about::About::new())),
+/// Entries in the KOS menu: the app each opens, or None to log out.
+const MENU: [(&str, Option<fn() -> Box<dyn App>>); 8] = [
+    ("Terminal", Some(|| Box::new(apps::terminal::Terminal::new()))),
+    ("Browser", Some(|| Box::new(apps::browser::Browser::new()))),
+    ("Programs", Some(|| Box::new(apps::programs::Programs::new()))),
+    ("Task Manager", Some(|| Box::new(apps::taskmgr::TaskManager::new()))),
+    ("Paint", Some(|| Box::new(apps::paint::Paint::new()))),
+    ("K-AI", Some(|| Box::new(apps::kai::KAI::new()))),
+    ("About KOS", Some(|| Box::new(apps::about::About::new()))),
+    ("Log out", None),
 ];
 
 /// Edges of a window being resized, as bits.
@@ -230,6 +231,8 @@ pub struct Wm {
     capture: Option<WindowId>,
     menu_open: bool,
     menu_hover: Option<usize>,
+    /// Nobody's logged in: the KOS menu doesn't open.
+    locked: bool,
     clock_second: u64,
     cascade: i32,
 }
@@ -262,9 +265,30 @@ impl Wm {
             capture: None,
             menu_open: false,
             menu_hover: None,
+            locked: false,
             clock_second: u64::MAX,
             cascade: 0,
         }
+    }
+
+    /// Locks the desktop (nobody's logged in) or unlocks it.
+    pub fn set_locked(&mut self, locked: bool) {
+        self.locked = locked;
+        if locked && self.menu_open {
+            self.set_menu(false);
+        }
+    }
+
+    /// Closes every window.
+    pub fn close_all(&mut self) {
+        let ids: Vec<WindowId> = self.windows.iter().map(|w| w.id).collect();
+        for id in ids {
+            self.close(id);
+        }
+    }
+
+    pub fn has_windows(&self) -> bool {
+        !self.windows.is_empty()
     }
 
     fn damage(&mut self, rect: Rect) {
@@ -407,12 +431,6 @@ impl Wm {
         match req {
             Request::Open { id, app } => self.open(id, app),
             Request::Close(id) => self.close(id),
-            Request::CloseAllButTerminal => {
-                let others: Vec<WindowId> = self.windows.iter().filter(|w| w.app.title() != "Terminal").map(|w| w.id).collect();
-                for id in others {
-                    self.close(id);
-                }
-            }
         }
     }
 
@@ -501,8 +519,10 @@ impl Wm {
         if self.menu_open {
             let item = self.menu_item_at(x, y);
             self.set_menu(false);
-            if let Some(item) = item {
-                self.open(crate::ui::window::next_id(), (MENU[item].1)());
+            match item.map(|i| MENU[i].1) {
+                Some(Some(app)) => self.open(crate::ui::window::next_id(), app()),
+                Some(None) => crate::users::log_out(),
+                None => {}
             }
             if item.is_some() || START.contains(x, y) {
                 return;
@@ -510,7 +530,9 @@ impl Wm {
         }
         if TASKBAR.contains(x, y) {
             if START.contains(x, y) {
-                self.set_menu(true);
+                if !self.locked {
+                    self.set_menu(true);
+                }
             } else if let Some(i) = self.task_button_at(x, y) {
                 let id = self.taskbar[i];
                 self.focus(id);
