@@ -18,6 +18,7 @@ pub fn wake_ui() {
 const FRAME_MS: u64 = 33;
 
 pub extern "C" fn ui_task() -> ! {
+    crate::scheduler::follow_session();
     match display::init() {
         Ok(name) => log::info!("{}x{} display ({})", display::WIDTH, display::HEIGHT, name),
         Err(e) => {

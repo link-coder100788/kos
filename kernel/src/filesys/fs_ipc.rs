@@ -16,6 +16,8 @@
 //! its own pair of queues (simplest), or upgrade to a real MPSC structure.
 
 use crate::filesys::backend::{DirEntryInfo, FsError};
+use crate::filesys::perms::Attrs;
+use crate::users::Uid;
 use alloc::string::String;
 use alloc::vec::Vec;
 pub use crate::std::sync::spsc::SpscQueue;
@@ -33,6 +35,14 @@ pub enum FsRequest {
     Mkdir { cwd: String, path: String },
     Create { cwd: String, path: String },
     Remove { cwd: String, path: String },
+    /// Sets the flags given (others may read / write); owner or root.
+    Chmod { cwd: String, path: String, read: Option<bool>, write: Option<bool> },
+    /// Gives it to `uid`; root only.
+    Chown { cwd: String, path: String, uid: Uid },
+    /// Its owner and flags.
+    Attrs { cwd: String, path: String },
+    /// Ok if the caller may write it (or create it), else PermissionDenied.
+    MayWrite { cwd: String, path: String },
 }
 
 pub enum FsResponse {
@@ -40,11 +50,13 @@ pub enum FsResponse {
     Data(Vec<u8>),
     /// New absolute cwd path, for ChangeDir.
     Path(String),
+    Attrs(Attrs),
     Ok,
     Err(FsError),
 }
 
-pub static FS_REQUEST_QUEUE: SpscQueue<FsRequest, 4> = SpscQueue::new();
+/// Each request with the uid it's made as.
+pub static FS_REQUEST_QUEUE: SpscQueue<(Uid, FsRequest), 4> = SpscQueue::new();
 pub static FS_RESPONSE_QUEUE: SpscQueue<FsResponse, 4> = SpscQueue::new();
 
 /// Woken when a request is queued (fs_task waits on it) and when a
@@ -60,13 +72,20 @@ static FS_CALL_BUSY: AtomicBool = AtomicBool::new(false);
 static FS_CALL_WAIT: WaitQueue = WaitQueue::new();
 
 /// Blocking call: submit a request and sleep until the response arrives.
-/// Safe to call from any number of tasks.
+/// It's made as the calling task's user (`scheduler::current_uid`). Safe
+/// to call from any number of tasks.
 pub fn fs_call(req: FsRequest) -> FsResponse {
+    fs_call_as(crate::scheduler::current_uid(), req)
+}
+
+/// Like `fs_call`, made as `uid`: the kernel's own files are read as root,
+/// and an open file is written back as whoever opened it.
+pub fn fs_call_as(uid: Uid, req: FsRequest) -> FsResponse {
     FS_CALL_WAIT.wait_until(|| {
         FS_CALL_BUSY.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok()
     });
     // Only one call is ever in flight, so the queues always have room.
-    if FS_REQUEST_QUEUE.push(req).is_err() {
+    if FS_REQUEST_QUEUE.push((uid, req)).is_err() {
         panic!("fs_call: request queue full");
     }
     FS_REQUEST_WAIT.wake_all();

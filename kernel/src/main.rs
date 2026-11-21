@@ -40,6 +40,7 @@ mod std;
 mod syscall;
 mod test;
 mod ui;
+mod users;
 mod util;
 
 extern crate alloc;

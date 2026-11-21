@@ -15,7 +15,9 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use base64::Engine;
 use crate::filesys::fs_ipc::FsRequest;
 use crate::filesys::fs_ipc::FsResponse;
-use crate::filesys::fs_ipc::fs_call;
+use crate::filesys::backend::FsError;
+use crate::filesys::fs_ipc::fs_call_as;
+use crate::users::Uid;
 use crate::println;
 use crate::fd::Fd;
 use crate::process::{self, Console, NewProcess, USER_BASE, HEAP_LIMIT};
@@ -30,6 +32,8 @@ struct Job {
     console: Console,
     /// Its stdin, stdout and stderr, if not the console's.
     stdio: Option<[Fd; 3]>,
+    /// Who it runs as: whoever asked for it.
+    uid: Uid,
 }
 
 static JOBS: IrqMutex<VecDeque<Job>> = IrqMutex::new(VecDeque::new());
@@ -37,7 +41,7 @@ static JOBS: IrqMutex<VecDeque<Job>> = IrqMutex::new(VecDeque::new());
 static FOREGROUND_PENDING: AtomicBool = AtomicBool::new(false);
 
 fn queue(path: String, args: String, console: Console) {
-    JOBS.lock().push_back(Job { path, args, console, stdio: None });
+    JOBS.lock().push_back(Job { path, args, console, stdio: None, uid: crate::scheduler::current_uid() });
     // The loader task waits on the same queue as programs exiting.
     process::EXITED.wake_all();
 }
@@ -85,9 +89,11 @@ pub fn run_pipeline(programs: Vec<(String, String, [Fd; 3])>) {
     }
 }
 
-fn read_program(path: &str) -> Result<Vec<u8>, &'static str> {
-    let bytes = match fs_call(FsRequest::Read { cwd: current_cwd(), path: String::from(path) }) {
+/// Reads program `path` as `uid`: you can only run what you can read.
+fn read_program(path: &str, uid: Uid) -> Result<Vec<u8>, &'static str> {
+    let bytes = match fs_call_as(uid, FsRequest::Read { cwd: current_cwd(), path: String::from(path) }) {
         FsResponse::Data(bytes) => bytes,
+        FsResponse::Err(FsError::PermissionDenied) => return Err("permission denied"),
         _ => return Err("can't read it"),
     };
     if path.ends_with(".kbin") {
@@ -107,18 +113,18 @@ fn read_program(path: &str) -> Result<Vec<u8>, &'static str> {
 
 /// Loads and starts one job, or says why it couldn't.
 fn start(job: &Job) -> Result<TaskId, String> {
-    let image = read_program(&job.path).map_err(String::from)?;
+    let image = read_program(&job.path, job.uid).map_err(String::from)?;
     log::debug!("{}: {} byte image", job.path, image.len());
     let name = job.path.rsplit('/').next().unwrap_or(&job.path);
     let name = name.trim_end_matches(".b64").trim_end_matches(".elf").trim_end_matches(".kbin");
-    start_image(name, &job.args, &image, job.path.ends_with(".kbin"), job.console, job.stdio.clone())
+    start_image(name, &job.args, &image, job.path.ends_with(".kbin"), job.console, job.stdio.clone(), job.uid)
 }
 
 /// Loads and starts program `path` straight away (for a program's
 /// `spawn`), returning its task id. `stdio` is its stdin, stdout and
-/// stderr; without it, it gets what `console` says.
+/// stderr; without it, it gets what `console` says. It runs as the caller.
 pub fn spawn(path: &str, args: &str, console: Console, stdio: Option<[Fd; 3]>) -> Result<TaskId, String> {
-    start(&Job { path: String::from(path), args: String::from(args), console, stdio })
+    start(&Job { path: String::from(path), args: String::from(args), console, stdio, uid: crate::scheduler::current_uid() })
 }
 
 /// Somewhere to load a program: the ELF and K loaders write through this.
@@ -130,10 +136,11 @@ pub trait ProgramMemory {
     fn write(&mut self, va: usize, bytes: &[u8]) -> Result<(), &'static str>;
 }
 
-/// Starts a program from an ELF (or, if `kbin`, a K program) in memory.
-pub fn start_image(name: &str, args: &str, image: &[u8], kbin: bool, console: Console, stdio: Option<[Fd; 3]>) -> Result<TaskId, String> {
+/// Starts a program from an ELF (or, if `kbin`, a K program) in memory,
+/// acting as `uid`.
+pub fn start_image(name: &str, args: &str, image: &[u8], kbin: bool, console: Console, stdio: Option<[Fd; 3]>, uid: Uid) -> Result<TaskId, String> {
     use alloc::format;
-    let mut new = NewProcess::new(name, console).ok_or("out of memory")?;
+    let mut new = NewProcess::new(name, console, uid).ok_or("out of memory")?;
     new.set_args(args);
     if let Some(stdio) = stdio {
         new.set_stdio(stdio);

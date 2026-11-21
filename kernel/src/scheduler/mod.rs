@@ -37,6 +37,7 @@ use crate::arch::irq;
 use crate::arch::timer;
 use crate::println;
 use crate::std::lock::irq_mutex::IrqMutex;
+use crate::users::Uid;
 use self::task::TrapFrame;
 
 const STACK_SIZE: usize = 64 * 1024;
@@ -46,6 +47,9 @@ pub const MAX_CORES: usize = 5;
 pub const PROGRAM_CORES: [usize; 2] = [3, 4];
 
 pub type TaskId = u64;
+
+/// A task's `uid` when it acts as the session's user, whoever that is.
+const FOLLOWS_SESSION: Uid = Uid::MAX;
 
 /// What a syscall asked the scheduler to do, via `TrapFrame::request`.
 #[repr(u64)]
@@ -74,6 +78,8 @@ pub struct Task {
     ttbr0: u64,
     /// Asked to end; see `kill`.
     killed: bool,
+    /// Who it acts as (see `current_uid`), or `FOLLOWS_SESSION`.
+    uid: Uid,
     /// Its entry in `KOS_DEBUG_TASKS`, once it's been given to a scheduler.
     debug_slot: Option<usize>,
     _stack: Vec<u8>,
@@ -95,7 +101,7 @@ impl Task {
         unsafe { frame.write(initial) };
         Task {
             id, name: String::from(name), started_ms: timer::uptime_ms(), state: State::Ready, ticks: 0, frame, ttbr0,
-            killed: false, debug_slot: None, _stack: stack,
+            killed: false, uid: crate::users::ROOT, debug_slot: None, _stack: stack,
         }
     }
 
@@ -318,9 +324,10 @@ fn core_for_program() -> usize {
 /// `sp`, in the address space `ttbr0`; returning from `entry` jumps to
 /// `ret`. Syscalls and interrupts run on its kernel stack. It goes to a
 /// program core.
-pub fn spawn_user(name: &str, entry: usize, sp: usize, ret: usize, ttbr0: u64) -> TaskId {
+pub fn spawn_user(name: &str, entry: usize, sp: usize, ret: usize, ttbr0: u64, uid: Uid) -> TaskId {
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    let task = Task::new(id, name, TrapFrame::new_user(entry, sp, ret), STACK_SIZE, ttbr0);
+    let mut task = Task::new(id, name, TrapFrame::new_user(entry, sp, ret), STACK_SIZE, ttbr0);
+    task.uid = uid;
     let core = core_for_program();
     add_task(core, task);
     crate::stats::inc(&crate::stats::TASKS_SPAWNED);
@@ -456,6 +463,33 @@ pub fn current_task_label(name: &mut [u8; 12]) -> Option<TaskId> {
     let n = task.name.len().min(name.len());
     name[..n].copy_from_slice(&task.name.as_bytes()[..n]);
     Some(task.id)
+}
+
+/// Who the running task acts as: a program, whoever started it; the
+/// shell and the desktop, the session's user; other kernel tasks, and
+/// work outside any task (thread and async cores), root.
+pub fn current_uid() -> Uid {
+    if !can_yield() {
+        return crate::users::ROOT;
+    }
+    let uid = {
+        let mut sched = here().lock();
+        if sched.on_idle { crate::users::ROOT } else { sched.current_task().uid }
+    };
+    if uid == FOLLOWS_SESSION { crate::users::session_uid() } else { uid }
+}
+
+/// Makes the running task act as the session's user from now on.
+pub fn follow_session() {
+    set_current_uid(FOLLOWS_SESSION);
+}
+
+/// Makes the running (kernel) task act as `uid` from now on.
+pub fn set_current_uid(uid: Uid) {
+    let mut sched = here().lock();
+    if !sched.on_idle {
+        sched.current_task().uid = uid;
+    }
 }
 
 /// The running task's id. Only meaningful where `can_yield()` is true.

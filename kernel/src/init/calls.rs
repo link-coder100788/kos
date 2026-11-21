@@ -175,6 +175,10 @@ fn test_if_enabled() {
         #[cfg(feature = "test")]
         crate::crypto::tests::run();
         #[cfg(feature = "test")]
+        crate::filesys::perms::tests::run();
+        #[cfg(feature = "test")]
+        crate::users::tests::run();
+        #[cfg(feature = "test")]
         crate::sound::wav::tests::run();
         #[cfg(feature = "test")]
         crate::test::run_all(&[&crate::test::heap_stress_test, &crate::test::heap_grows_and_shrinks_test]);

@@ -56,6 +56,7 @@ use crate::mm::layout::{phys_to_virt, PAGE_SIZE};
 use crate::scheduler::{self, wait::WaitQueue, TaskId};
 use crate::std::lock::irq_mutex::IrqMutex;
 use crate::ui::window::WindowId;
+use crate::users::Uid;
 use crate::fd::{self, Fd};
 
 /// Where programs are loaded. K programs are linked to run here.
@@ -340,6 +341,8 @@ struct Process {
     name: String,
     args: String,
     task: TaskId,
+    /// Who started it; it acts as them.
+    uid: Uid,
     /// Its task has ended; waiting to be reaped.
     exited: bool,
     console: Console,
@@ -403,6 +406,8 @@ pub struct NewProcess {
     /// What followed the program's name on the command line.
     args: String,
     console: Console,
+    /// Who it acts as.
+    uid: Uid,
     memory: Memory,
     /// Its stdin, stdout and stderr.
     stdio: [Fd; 3],
@@ -410,8 +415,8 @@ pub struct NewProcess {
 
 impl NewProcess {
     /// An empty address space with just the start of the stack and the
-    /// exit stub. None if memory ran out.
-    pub fn new(name: &str, console: Console) -> Option<Self> {
+    /// exit stub, for a program acting as `uid`. None if memory ran out.
+    pub fn new(name: &str, console: Console, uid: Uid) -> Option<Self> {
         let mut memory = Memory::new();
         if !memory.map_range(STACK_TOP - STACK_INITIAL, STACK_INITIAL, MapFlags::USER_RW)
             || !memory.map_range(EXIT_STUB, PAGE_SIZE, MapFlags::USER_RWX)
@@ -420,7 +425,7 @@ impl NewProcess {
         }
         // A program in the background has nowhere to print or read from.
         let stdio = if console == Console::Detached { [fd::null(), fd::null(), fd::null()] } else { [fd::console(), fd::console(), fd::console()] };
-        Some(Self { name: String::from(name), args: String::new(), console, memory, stdio })
+        Some(Self { name: String::from(name), args: String::new(), console, uid, memory, stdio })
     }
 
     /// Gives the program its stdin, stdout and stderr.
@@ -459,7 +464,7 @@ impl crate::loader::ProgramMemory for NewProcess {
 /// its heap starts after that. Fails if 255 programs are already running.
 pub fn start(new: NewProcess, entry: usize, image_end: usize) -> Result<TaskId, &'static str> {
     let heap_start = (image_end + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-    let NewProcess { name, args, console, memory, stdio } = new;
+    let NewProcess { name, args, console, uid, memory, stdio } = new;
     let fds = stdio.into_iter().map(Some).collect();
     let mut memory = Some(memory);
     // It's added to the table before the lock is released, so even if it
@@ -469,7 +474,7 @@ pub fn start(new: NewProcess, entry: usize, image_end: usize) -> Result<TaskId, 
         let asid = table.take_asid().ok_or("too many programs are running")?;
         let memory = memory.take().unwrap();
         let ttbr0 = mmu::ttbr0_value(&memory.space, asid);
-        let task = scheduler::spawn_user(&name, entry, STACK_TOP, EXIT_STUB, ttbr0);
+        let task = scheduler::spawn_user(&name, entry, STACK_TOP, EXIT_STUB, ttbr0, uid);
         let pid = table.next_pid;
         table.next_pid += 1;
         table.processes.push(Process {
@@ -477,6 +482,7 @@ pub fn start(new: NewProcess, entry: usize, image_end: usize) -> Result<TaskId, 
             name,
             args,
             task,
+            uid,
             exited: false,
             console,
             asid,
@@ -823,6 +829,8 @@ pub fn foreground_running() -> bool {
 pub struct ProcessInfo {
     pub pid: Pid,
     pub task: TaskId,
+    /// Who it acts as.
+    pub uid: Uid,
     pub console: Console,
     pub heap_used: usize,
     /// All the memory mapped for it: image, heap and stack.
@@ -836,6 +844,7 @@ pub fn list() -> Vec<ProcessInfo> {
         .map(|p| ProcessInfo {
             pid: p.pid,
             task: p.task,
+            uid: p.uid,
             console: p.console,
             heap_used: p.heap.in_use,
             memory: p.memory.pages.len() * PAGE_SIZE,
@@ -844,11 +853,16 @@ pub fn list() -> Vec<ProcessInfo> {
         .collect()
 }
 
-/// Ends program `id`. Kernel tasks can't be killed.
+/// Ends program `id`. Kernel tasks can't be killed, and only root can
+/// end another user's programs.
 pub fn kill(id: TaskId) -> Result<(), &'static str> {
-    let is_program = TABLE.lock().processes.iter().any(|p| p.task == id && !p.exited);
-    if !is_program {
+    let owner = TABLE.lock().processes.iter().find(|p| p.task == id && !p.exited).map(|p| p.uid);
+    let Some(owner) = owner else {
         return Err(if scheduler::tasks().iter().any(|t| t.id == id) { "that's a kernel task, not a program" } else { "no such task" });
+    };
+    let caller = scheduler::current_uid();
+    if caller != crate::users::ROOT && caller != owner {
+        return Err("that program belongs to another user");
     }
     set_status_of(id, STATUS_KILLED);
     scheduler::kill(id);
@@ -977,7 +991,7 @@ pub mod tests {
     fn test_new_process_has_stack_and_exit_stub() {
         let (free_before, _) = frame::stats();
         {
-            let new = NewProcess::new("test", Console::Detached).unwrap();
+            let new = NewProcess::new("test", Console::Detached, crate::users::ROOT).unwrap();
             assert!(new.memory.is_mapped(STACK_TOP - STACK_INITIAL, STACK_INITIAL));
             assert!(!new.memory.is_mapped(STACK_TOP - STACK_INITIAL - PAGE_SIZE, 1), "more stack than it starts with");
             let stub = new.memory.page_at(EXIT_STUB).unwrap();

@@ -26,6 +26,7 @@ pub enum FsError {
     NoSpace,
     InvalidPath,
     Io,
+    PermissionDenied,
 }
 
 /// What programs see from `last_error`: the caller already knows the path,
@@ -41,6 +42,7 @@ impl core::fmt::Display for FsError {
             FsError::NoSpace => "the disk is full",
             FsError::InvalidPath => "bad path",
             FsError::Io => "disk error",
+            FsError::PermissionDenied => "permission denied",
         })
     }
 }

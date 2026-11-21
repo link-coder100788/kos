@@ -6,11 +6,13 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
+use crate::filesys::backend::FsError;
 use crate::filesys::fs_ipc::{fs_call, FsRequest, FsResponse};
 use crate::loader;
 use crate::process::{self, Console, USER_BASE};
 use crate::scheduler::{self, wait::sleep_ms, TaskId};
 use crate::stats::PROGRAMS_KILLED;
+use crate::users::Uid;
 
 // ---- a few AArch64 instructions -------------------------------------------------
 
@@ -66,7 +68,7 @@ fn kbin(code: &[u32]) -> Vec<u8> {
 }
 
 fn start(code: &[u32]) -> TaskId {
-    loader::start_image("test", "", &kbin(code), true, Console::Detached, None).expect("starting a test program")
+    loader::start_image("test", "", &kbin(code), true, Console::Detached, None, scheduler::current_uid()).expect("starting a test program")
 }
 
 fn running(id: TaskId) -> bool {
@@ -348,7 +350,7 @@ fn status_within(id: TaskId, ms: u64) -> i32 {
 
 /// Starts `code` with `stdio` as its stdin, stdout and stderr.
 fn start_with(code: &[u32], stdio: [crate::fd::Fd; 3]) -> TaskId {
-    loader::start_image("test", "", &kbin(code), true, Console::Detached, Some(stdio)).expect("starting a test program")
+    loader::start_image("test", "", &kbin(code), true, Console::Detached, Some(stdio), scheduler::current_uid()).expect("starting a test program")
 }
 
 fn test_exit_status() {
@@ -430,6 +432,90 @@ fn run_program(path: &str, args: &str, ms: u64) -> (i32, String) {
     (status, String::from_utf8_lossy(&printed).into_owned())
 }
 
+// ---- users -------------------------------------------------------------------
+
+const ALICE: Uid = 1000;
+const BOB: Uid = 1001;
+
+fn fs_as(uid: Uid, req: FsRequest) -> FsResponse {
+    crate::filesys::fs_ipc::fs_call_as(uid, req)
+}
+
+fn denied(resp: FsResponse) -> bool {
+    matches!(resp, FsResponse::Err(FsError::PermissionDenied))
+}
+
+/// A folder only alice can see into, with a file in it.
+fn make_alices_folder() {
+    remove_tree("/permtest");
+    assert!(matches!(fs_call(FsRequest::Mkdir { cwd: "/".into(), path: "/permtest".into() }), FsResponse::Ok));
+    write_file("/permtest/secret.txt", "alice's");
+    assert!(matches!(fs_call(FsRequest::Chown { cwd: "/".into(), path: "/PermTest".into(), uid: ALICE }), FsResponse::Ok));
+    assert!(matches!(fs_call(FsRequest::Chmod { cwd: "/".into(), path: "/permtest".into(), read: Some(false), write: Some(false) }), FsResponse::Ok));
+}
+
+fn remove_tree(path: &str) {
+    if let FsResponse::Listing(entries) = fs_call(FsRequest::List { cwd: "/".into(), path: path.into() }) {
+        for e in entries.iter().filter(|e| e.name != "." && e.name != "..") {
+            remove_tree(&alloc::format!("{}/{}", path, e.name));
+        }
+    }
+    remove_file(path);
+}
+
+fn test_private_folders_and_system_files() {
+    make_alices_folder();
+    let read = |uid| fs_as(uid, FsRequest::Read { cwd: "/".into(), path: "/permtest/secret.txt".into() });
+    assert!(matches!(read(ALICE), FsResponse::Data(_)));
+    assert!(denied(read(BOB)), "bob read alice's file");
+    assert!(denied(fs_as(BOB, FsRequest::List { cwd: "/permtest".into(), path: ".".into() })));
+    assert!(denied(fs_as(BOB, FsRequest::Write { cwd: "/".into(), path: "/bin/x".into(), data: Vec::new() })));
+    assert!(denied(fs_as(ALICE, FsRequest::Remove { cwd: "/".into(), path: "/permtest".into() })), "alice removed a folder in /");
+    assert!(denied(fs_as(BOB, FsRequest::Chmod { cwd: "/".into(), path: "/permtest".into(), read: Some(true), write: None })));
+    assert!(matches!(fs_as(ALICE, FsRequest::Write { cwd: "/permtest".into(), path: "new.txt".into(), data: Vec::new() }), FsResponse::Ok));
+    match fs_call(FsRequest::Attrs { cwd: "/".into(), path: "/permtest/new.txt".into() }) {
+        FsResponse::Attrs(a) => assert_eq!((a.owner, a.read, a.write), (ALICE, false, false)),
+        _ => panic!("no attributes for /permtest/new.txt"),
+    }
+    remove_tree("/permtest");
+    match fs_call(FsRequest::Attrs { cwd: "/".into(), path: "/".into() }) {
+        FsResponse::Attrs(a) => assert_eq!(a.owner, crate::users::ROOT),
+        _ => panic!("no attributes for /"),
+    }
+    assert!(matches!(fs_call(FsRequest::Mkdir { cwd: "/".into(), path: "/permtest".into() }), FsResponse::Ok));
+    match fs_call(FsRequest::Attrs { cwd: "/".into(), path: "/permtest".into() }) {
+        FsResponse::Attrs(a) => assert_eq!(a.owner, crate::users::ROOT, "the old entry outlived its folder"),
+        _ => panic!("no attributes for /permtest"),
+    }
+    remove_tree("/permtest");
+}
+
+/// Programs act as whoever started them: bob's cat can't read alice's
+/// file, and bob can't end alice's programs (root can).
+fn test_programs_act_as_who_started_them() {
+    make_alices_folder();
+    scheduler::set_current_uid(BOB);
+    let (status, printed) = run_program("/bin/cat.elf.b64", "/permtest/secret.txt", 5_000);
+    let open = crate::fd::open("/".into(), "/permtest/secret.txt", crate::fd::O_RDONLY).is_ok();
+    scheduler::set_current_uid(ALICE);
+    let writes = crate::fd::open("/".into(), "/bin/ls.elf.b64", crate::fd::O_WRONLY).map(drop);
+    let (alice_status, alice_printed) = run_program("/bin/cat.elf.b64", "/permtest/secret.txt", 5_000);
+    let alices = start_with(&[0x1400_0000 /* b . */], [crate::fd::null(), crate::fd::null(), crate::fd::null()]);
+    scheduler::set_current_uid(BOB);
+    let bob_kill = process::kill(alices);
+    scheduler::set_current_uid(crate::users::ROOT);
+    assert_ne!(status, 0, "bob's cat read alice's file: {}", printed);
+    assert!(printed.contains("permission denied"), "cat said: {}", printed);
+    assert!(!open, "bob opened alice's file");
+    assert_eq!(writes.err().as_deref(), Some("permission denied"));
+    assert_eq!((alice_status, alice_printed.as_str()), (0, "alice's"));
+    assert!(bob_kill.is_err(), "bob ended alice's program");
+    assert!(running(alices));
+    process::kill(alices).expect("root ends anyone's program");
+    status_within(alices, 2000);
+    remove_tree("/permtest");
+}
+
 /// /bin/tcc (from `make disk`) compiles a C program on KOS, and what it
 /// makes runs. A detached program's output goes nowhere, so the program
 /// writes its answer to a file. A program that doesn't compile gives no
@@ -502,6 +588,8 @@ pub fn run() {
         &test_programs_run_in_parallel,
         &test_wakeups_reach_program_cores_quickly,
         &test_kernel_tasks_cant_be_killed,
+        &test_private_folders_and_system_files,
+        &test_programs_act_as_who_started_them,
         &test_exit_status,
         &test_stdout_goes_into_a_pipe,
         &test_read_line_from_a_pipe,

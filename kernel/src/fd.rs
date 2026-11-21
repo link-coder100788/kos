@@ -25,7 +25,8 @@ use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use crate::filesys::fs_ipc::{fs_call, FsRequest, FsResponse};
+use crate::filesys::fs_ipc::{fs_call, fs_call_as, FsRequest, FsResponse};
+use crate::users::Uid;
 use crate::process::Console;
 use crate::scheduler::{self, wait::WaitQueue};
 use crate::std::lock::irq_mutex::IrqMutex;
@@ -53,6 +54,8 @@ pub enum Object {
 }
 
 pub struct OpenFile {
+    /// Who opened it: it's written back as them, even after they've gone.
+    uid: Uid,
     cwd: String,
     path: String,
     data: Vec<u8>,
@@ -87,6 +90,7 @@ fn fs_error(response: FsResponse) -> String {
 pub fn open(cwd: String, path: &str, flags: u64) -> Result<Fd, String> {
     let access = flags & O_ACCMODE;
     let (readable, writable) = (access != O_WRONLY, access != O_RDONLY);
+    let uid = crate::scheduler::current_uid();
     let existing = match fs_call(FsRequest::Read { cwd: cwd.clone(), path: String::from(path) }) {
         FsResponse::Data(data) => Some(data),
         FsResponse::Err(crate::filesys::backend::FsError::NotFound) => None,
@@ -97,6 +101,12 @@ pub fn open(cwd: String, path: &str, flags: u64) -> Result<Fd, String> {
     }
     if existing.is_none() && flags & O_CREAT == 0 {
         return Err(format!("{}: NotFound", path));
+    }
+    // Say so now, not when it's written back.
+    if writable && existing.is_some() {
+        if let FsResponse::Err(e) = fs_call(FsRequest::MayWrite { cwd: cwd.clone(), path: String::from(path) }) {
+            return Err(e.to_string());
+        }
     }
     let truncate = writable && flags & O_TRUNC != 0;
     let data = match existing {
@@ -113,6 +123,7 @@ pub fn open(cwd: String, path: &str, flags: u64) -> Result<Fd, String> {
         }
     };
     Ok(Arc::new(Object::File(IrqMutex::new(OpenFile {
+        uid,
         cwd,
         path: String::from(path),
         data,
@@ -290,15 +301,15 @@ impl Object {
     /// Writes a changed file back to the disk now.
     pub fn flush(&self) -> Result<(), String> {
         let Object::File(file) = self else { return Ok(()) };
-        let (cwd, path, data) = {
+        let (uid, cwd, path, data) = {
             let mut f = file.lock();
             if !f.dirty {
                 return Ok(());
             }
             f.dirty = false;
-            (f.cwd.clone(), f.path.clone(), f.data.clone())
+            (f.uid, f.cwd.clone(), f.path.clone(), f.data.clone())
         };
-        match fs_call(FsRequest::Write { cwd, path: path.clone(), data }) {
+        match fs_call_as(uid, FsRequest::Write { cwd, path: path.clone(), data }) {
             FsResponse::Ok => Ok(()),
             e => Err(fs_error(e)),
         }

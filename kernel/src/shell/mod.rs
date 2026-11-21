@@ -320,6 +320,7 @@ impl<'a> UartCommand<'a> {
 
 pub extern "C" fn uart_read_task() -> ! {
     let uart = Uart {};
+    crate::scheduler::follow_session();
     crate::filesys::fs_task::wait_until_ready();
     println!("KOS shell. Type 'help' for commands.");
     loop {

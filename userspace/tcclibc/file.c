@@ -24,6 +24,7 @@ static int failed(void) {
     else if (strstr(why, "too many open files")) errno = EMFILE;
     else if (strstr(why, "bad file descriptor") || strstr(why, "not open for")) errno = EBADF;
     else if (strstr(why, "is a folder") || strstr(why, "not a folder")) errno = EACCES;
+    else if (strstr(why, "permission denied")) errno = EACCES;
     else errno = EIO;
     return -1;
 }
