@@ -340,6 +340,8 @@ struct Process {
     pid: Pid,
     name: String,
     args: String,
+    /// Its current folder: where its relative paths start.
+    cwd: String,
     task: TaskId,
     /// Who it acts as: who started it, unless it changed (`set_uid`).
     uid: Uid,
@@ -410,6 +412,8 @@ pub struct NewProcess {
     name: String,
     /// What followed the program's name on the command line.
     args: String,
+    /// Its current folder to start with.
+    cwd: String,
     console: Console,
     /// Who it acts as.
     uid: Uid,
@@ -432,12 +436,17 @@ impl NewProcess {
         }
         // A program in the background has nowhere to print or read from.
         let stdio = if console == Console::Detached { [fd::null(), fd::null(), fd::null()] } else { [fd::console(), fd::console(), fd::console()] };
-        Some(Self { name: String::from(name), args: String::new(), console, uid, daemon: false, memory, stdio })
+        Some(Self { name: String::from(name), args: String::new(), cwd: String::from("/"), console, uid, daemon: false, memory, stdio })
     }
 
     /// Gives the program its stdin, stdout and stderr.
     pub fn set_stdio(&mut self, stdio: [Fd; 3]) {
         self.stdio = stdio;
+    }
+
+    /// Starts it in folder `cwd` (absolute).
+    pub fn set_cwd(&mut self, cwd: &str) {
+        self.cwd = String::from(cwd);
     }
 
     /// Makes it a daemon: logging out leaves it running.
@@ -476,7 +485,7 @@ impl crate::loader::ProgramMemory for NewProcess {
 /// its heap starts after that. Fails if 255 programs are already running.
 pub fn start(new: NewProcess, entry: usize, image_end: usize) -> Result<TaskId, &'static str> {
     let heap_start = (image_end + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-    let NewProcess { name, args, console, uid, daemon, memory, stdio } = new;
+    let NewProcess { name, args, cwd, console, uid, daemon, memory, stdio } = new;
     let fds = stdio.into_iter().map(Some).collect();
     let mut memory = Some(memory);
     // It's added to the table before the lock is released, so even if it
@@ -493,6 +502,7 @@ pub fn start(new: NewProcess, entry: usize, image_end: usize) -> Result<TaskId, 
             pid,
             name,
             args,
+            cwd,
             task,
             uid,
             real_uid: uid,
@@ -682,6 +692,17 @@ pub fn console() -> Option<Console> {
 /// The calling program's command-line arguments.
 pub fn args() -> Option<String> {
     with_current(|p| p.args.clone())
+}
+
+/// The calling program's current folder, or None if it isn't a program.
+pub fn cwd() -> Option<String> {
+    with_current(|p| p.cwd.clone())
+}
+
+/// Changes the calling program's current folder to `path` (absolute, and
+/// already checked to be a folder). Returns whether it's a program.
+pub fn set_cwd(path: String) -> bool {
+    with_current(|p| p.cwd = path).is_some()
 }
 
 /// How big the calling program's allocation at `ptr` is (rounded up to 16

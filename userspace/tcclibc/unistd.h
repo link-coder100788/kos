@@ -26,7 +26,9 @@ int dup2(int fd, int to);
 int pipe(int fds[2]);
 int isatty(int fd);
 int unlink(const char* path);
-// The shell's current directory, or NULL if it doesn't fit in `size`.
+// This program's current folder, or NULL if it doesn't fit in `size`.
 char* getcwd(char* buf, size_t size);
+// Changes this program's current folder. 0, or -1 with errno set.
+int chdir(const char* path);
 
 #endif //C_UNISTD_H

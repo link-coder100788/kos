@@ -300,6 +300,8 @@ See `userspace/prog/ui_demo.c` for a program with a window.
 
 Every program ends with an exit status (0-255): what it passed to `exit`, or 130 if Ctrl+C ended it, 137 if it was killed and 139 if it crashed. `proc_wait(id)` returns it, once the program is gone and whatever it wrote to files is on the disk.
 
+A program has its own current folder, where its relative paths start: it begins in the folder of whoever started it (the shell's, or its parent's for `spawn`), and `fs_chdir` (`chdir` in tcc's C library) changes it, for it and the programs it starts from then on. `cd` in ksh and in an ssh session does that, so a bare `ls` lists the right folder.
+
 A program has file descriptors, as on Unix (`kernel/src/fd.rs`): 0, 1 and 2 are its stdin, stdout and stderr, and `printf`, `write` and `readln` use them. Whoever starts a program picks them: the console for `run` and the Programs window, nothing for `bg`, and the parent's own for `spawn`. `spawn_io(path, args, fds)` gives it others, so a shell can feed one program's output to another through a pipe (`fd_pipe`), or send it to a file (`fd_open`). A pipe holds 64 KiB; reading an empty one waits, and gets the end of the input once every program that could write to it has ended. KOS's filesystem reads and writes whole files, so an open file is a copy in kernel memory, written back when its last descriptor is closed or its program ends.
 
 #### Syscalls
@@ -325,10 +327,11 @@ Under the library, a program talks to the kernel with `svc #n`, where `n` picks 
 | | 2 | path, len, buf, max → listing size: lines of `d`/`f`, tab, size, tab, name | `fs_list` |
 | | 3 | path, len → 0 | `fs_remove` |
 | | 4 | path, len → 0 | `fs_mkdir` |
-| | 5 | buf, max → length of the current directory | `fs_cwd` |
+| | 5 | buf, max → length of the program's current folder | `fs_cwd`, `getcwd` |
 | | 6 | path, len, read, write → 0; each 1 others may, 0 they may not, -1 unchanged (owner or root) | `fs_chmod` |
 | | 7 | path, len, uid → 0 (root) | `fs_chown` |
 | | 8 | path, len → owner uid \| others may read << 32 \| others may write << 33 | `fs_attrs` |
+| | 9 | path, len → 0; makes it the program's current folder | `fs_chdir`, `chdir` |
 | 6 windows | 0 | title, elements, count → window id | `ui_create_window` |
 | | 1 | id → | `ui_close_window` |
 | | 2 | → window id | `ui_test_window` |

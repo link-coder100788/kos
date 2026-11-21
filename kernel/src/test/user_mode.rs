@@ -68,7 +68,7 @@ fn kbin(code: &[u32]) -> Vec<u8> {
 }
 
 fn start(code: &[u32]) -> TaskId {
-    loader::start_image("test", "", &kbin(code), true, Console::Detached, None, scheduler::current_uid(), false).expect("starting a test program")
+    loader::start_image("test", "", &kbin(code), true, Console::Detached, None, &loader::Starter::caller()).expect("starting a test program")
 }
 
 fn running(id: TaskId) -> bool {
@@ -350,7 +350,7 @@ fn status_within(id: TaskId, ms: u64) -> i32 {
 
 /// Starts `code` with `stdio` as its stdin, stdout and stderr.
 fn start_with(code: &[u32], stdio: [crate::fd::Fd; 3]) -> TaskId {
-    loader::start_image("test", "", &kbin(code), true, Console::Detached, Some(stdio), scheduler::current_uid(), false).expect("starting a test program")
+    loader::start_image("test", "", &kbin(code), true, Console::Detached, Some(stdio), &loader::Starter::caller()).expect("starting a test program")
 }
 
 fn test_exit_status() {
@@ -420,9 +420,25 @@ fn remove_file(path: &str) {
 /// Runs program `path` with `args`, detached, and waits up to `ms` for it.
 /// Returns its exit status, and what it printed (stdout and stderr).
 fn run_program(path: &str, args: &str, ms: u64) -> (i32, String) {
+    run_program_in(None, path, args, ms)
+}
+
+/// `run_program`, started in folder `cwd` if given.
+fn run_program_in(cwd: Option<&str>, path: &str, args: &str, ms: u64) -> (i32, String) {
     let (r, w) = crate::fd::pipe();
     let stdio = [crate::fd::null(), w.clone(), w];
-    let id = loader::spawn(path, args, Console::Detached, Some(stdio)).unwrap_or_else(|e| panic!("can't run {}: {}", path, e));
+    let id = match cwd {
+        None => loader::spawn(path, args, Console::Detached, Some(stdio)),
+        Some(cwd) => {
+            let b64 = read_file(path).unwrap_or_else(|| panic!("no {}", path));
+            let mut image = alloc::vec![0u8; b64.len()];
+            let len = base64::Engine::decode_slice(&base64::engine::general_purpose::STANDARD, &b64, &mut image).expect("a base64 program");
+            image.truncate(len);
+            let mut starter = loader::Starter::caller();
+            starter.cwd = String::from(cwd);
+            loader::start_image("test", args, &image, false, Console::Detached, Some(stdio), &starter)
+        }
+    }.unwrap_or_else(|e| panic!("can't run {}: {}", path, e));
     let status = status_within(id, ms);
     let mut printed = Vec::new();
     let mut buf = [0u8; 512];
@@ -516,6 +532,18 @@ fn test_programs_act_as_who_started_them() {
     remove_tree("/permtest");
 }
 
+/// A program starts in the folder of whoever started it, and its
+/// relative paths start there, wherever the shell is.
+fn test_programs_have_their_own_folder() {
+    make_alices_folder();
+    let (status, printed) = run_program_in(Some("/permtest"), "/bin/cat.elf.b64", "secret.txt", 5_000);
+    assert_eq!((status, printed.as_str()), (0, "alice's"));
+    let (status, printed) = run_program_in(Some("/permtest"), "/bin/ls.elf.b64", "", 5_000);
+    assert_eq!(status, 0, "ls failed: {}", printed);
+    assert!(printed.contains("secret.txt"), "ls listed: {}", printed);
+    remove_tree("/permtest");
+}
+
 /// /bin/tcc (from `make disk`) compiles a C program on KOS, and what it
 /// makes runs. A detached program's output goes nowhere, so the program
 /// writes its answer to a file. A program that doesn't compile gives no
@@ -590,6 +618,7 @@ pub fn run() {
         &test_kernel_tasks_cant_be_killed,
         &test_private_folders_and_system_files,
         &test_programs_act_as_who_started_them,
+        &test_programs_have_their_own_folder,
         &test_exit_status,
         &test_stdout_goes_into_a_pipe,
         &test_read_line_from_a_pipe,

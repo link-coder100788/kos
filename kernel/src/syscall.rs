@@ -1,5 +1,5 @@
 use crate::scheduler::{Request, task::TrapFrame};
-use crate::{drivers::uart::Uart, filesys::fs_ipc::{FsRequest, fs_call}, mm::allocator::ALLOCATOR, println, scheduler, sections::{__syscalls_end, __syscalls_start}, shell::fs::current_cwd, ui::window::{WindowElementDesc, WindowId}};
+use crate::{drivers::uart::Uart, filesys::fs_ipc::{FsRequest, fs_call}, mm::allocator::ALLOCATOR, println, scheduler, sections::{__syscalls_end, __syscalls_start}, loader::caller_cwd, ui::window::{WindowElementDesc, WindowId}};
 use crate::process::Console;
 use kos_derive::syscall;
 use crate::filesys::fs_ipc::FsResponse;
@@ -244,21 +244,22 @@ mod filesystem {
     pub const FS_CHMOD: u64 = 6;  // (path, len, read, write) -> 0; each 1 = others may, 0 = may not, -1 = unchanged
     pub const FS_CHOWN: u64 = 7;  // (path, len, uid) -> 0; root only
     pub const FS_ATTRS: u64 = 8;  // (path, len) -> owner uid | others may read << 32 | others may write << 33
+    pub const FS_CHDIR: u64 = 9;  // (path, len) -> 0; the calling program's current folder
 
-    const_unique!(FS_WRITE, FS_READ, FS_LIST, FS_REMOVE, FS_MKDIR, FS_CWD, FS_CHMOD, FS_CHOWN, FS_ATTRS);
+    const_unique!(FS_WRITE, FS_READ, FS_LIST, FS_REMOVE, FS_MKDIR, FS_CWD, FS_CHMOD, FS_CHOWN, FS_ATTRS, FS_CHDIR);
 }
 
-/// Files, with paths relative to the shell's current directory. Errors
-/// return u64::MAX, with the reason kept for `last_error`.
+/// Files, with paths relative to the calling program's current folder.
+/// Errors return u64::MAX, with the reason kept for `last_error`.
 #[syscall(5)]
 pub fn syscall_filesystem(frame: &mut SyscallContext) {
     let syscall_num = frame.regs[16];
     if syscall_num == filesystem::FS_CWD {
-        frame[0] = copy_out(frame, frame[0], frame[1], current_cwd().as_bytes());
+        frame[0] = copy_out(frame, frame[0], frame[1], caller_cwd().as_bytes());
         return;
     }
     let Some(path) = user_str(frame, frame[0], frame[1]) else { frame[0] = fail("bad path"); return };
-    let cwd = current_cwd();
+    let cwd = caller_cwd();
     let path = path.to_string();
     let failed = |op: &str, e: FsResponse| match e {
         FsResponse::Err(e) => { log::debug!("{} {}: {:?}", op, path, e); fail(&e.to_string()) }
@@ -312,6 +313,13 @@ pub fn syscall_filesystem(frame: &mut SyscallContext) {
             FsResponse::Attrs(a) => a.owner as u64 | (a.read as u64) << 32 | (a.write as u64) << 33,
             e => failed("fs_attrs", e),
         },
+        filesystem::FS_CHDIR => match fs_call(FsRequest::ChangeDir { cwd, path: path.clone() }) {
+            FsResponse::Path(new_cwd) => match crate::process::set_cwd(new_cwd) {
+                true => 0,
+                false => fail("only programs have a current folder of their own"),
+            },
+            e => failed("fs_chdir", e),
+        },
         _ => { log::warn!("filesystem syscall: unknown sub-command {}", syscall_num); u64::MAX }
     };
 }
@@ -344,7 +352,7 @@ pub fn syscall_fd(frame: &mut SyscallContext) {
     let get = |fd: u64| fd_get(fd).ok_or_else(|| alloc::string::String::from("bad file descriptor"));
     let result: Result<u64, alloc::string::String> = match syscall_num {
         fds::OPEN => match user_str(frame, frame[0], frame[1]) {
-            Some(path) => crate::fd::open(current_cwd(), path, frame[2])
+            Some(path) => crate::fd::open(caller_cwd(), path, frame[2])
                 .and_then(|f| fd_add(f).map_err(|_| "too many open files".to_string())),
             None => Err("bad path".to_string()),
         },
@@ -1126,7 +1134,7 @@ pub fn syscall_sound(frame: &mut SyscallContext) {
         },
         sound::STOP => crate::sound::stop(),
         sound::PLAY_FILE => match user_str(frame, frame[0], frame[1]) {
-            Some(path) => crate::sound::play_file(&current_cwd(), path).map(wait),
+            Some(path) => crate::sound::play_file(&caller_cwd(), path).map(wait),
             None => Err("bad path".to_string()),
         },
         sound::BUSY => {

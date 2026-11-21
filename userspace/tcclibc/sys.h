@@ -31,7 +31,7 @@
 //    3   read a line    readln (from stdin)
 //    4   memory         alloc*, free, mem_free, mem_total, mem_size
 //    5   files          fs_write, fs_read, fs_list, fs_remove, fs_mkdir, fs_cwd,
-//                       fs_attrs, fs_chmod, fs_chown
+//                       fs_attrs, fs_chmod, fs_chown, fs_chdir
 //    6   windows        ui_*, canvas_*
 //    7   time           sleep_ms, sleep_s, uptime_ms, unix_time, utc_offset
 //    8   dump           dump
@@ -281,9 +281,15 @@ long fs_remove(const char* path);
 // Makes a folder. Returns 0 or -1.
 long fs_mkdir(const char* path);
 
-// Copies the shell's current directory into buf, NUL-terminated. Returns
-// its length, or -1 if it doesn't fit.
+// Copies this program's current folder into buf, NUL-terminated. Returns
+// its length, or -1 if it doesn't fit. A program starts in the folder of
+// whoever started it (the shell's, or the program that spawned it), and
+// relative paths start there.
 long fs_cwd(char* buf, size_t max_len);
+
+// Makes path this program's current folder (and the one programs it
+// starts begin in). Returns 0 or -1.
+long fs_chdir(const char* path);
 
 // Who may use a file or folder: its owner always may; others may read it
 // (a folder: look inside) if `read`, and write it (a folder: add and

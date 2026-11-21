@@ -1038,7 +1038,9 @@ static int b_cd(int argc, char** argv) {
     if (!strcmp(target, "-")) target = old_cwd;
     char path[256];
     abs_path(target, path, sizeof path);
-    if (!is_dir(path)) return fail("cd: %s: %s", target, is_file(path) ? "not a folder" : "no such folder");
+    // Programs ksh starts begin there too. The kernel says why not: no
+    // such folder, not a folder, or permission denied.
+    if (fs_chdir(path) < 0) return fail("cd: %s: %s", target, last_error());
     strcpy(old_cwd, cwd);
     strcpy(cwd, path);
     return 0;

@@ -88,6 +88,10 @@ char* getcwd(char* buf, size_t size) {
     return buf;
 }
 
+int chdir(const char* path) {
+    return fs_chdir(path) < 0 ? failed() : 0;
+}
+
 // ---- FILE streams -------------------------------------------------------------
 
 struct FILE {

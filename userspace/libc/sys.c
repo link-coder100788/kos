@@ -529,6 +529,10 @@ long fs_chown(const char* path, long uid) {
     return (long)SVC(0x5, 7, path, c_strlen(path), uid, 0);
 }
 
+long fs_chdir(const char* path) {
+    return (long)SVC(0x5, 9, path, c_strlen(path), 0, 0);
+}
+
 long fs_cwd(char* buf, size_t max_len) {
     long n = (long)SVC(0x5, 5, buf, max_len, 0, 0);
     if (n < 0 || (size_t)n >= max_len) return -1;

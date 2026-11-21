@@ -725,7 +725,7 @@ static void log_in(void) {
             char home[96];
             if (uid == 0) snprintf(home, sizeof home, "/root");
             else snprintf(home, sizeof home, "/home/%s", user);
-            if (is_dir(home)) snprintf(cwd, sizeof cwd, "%s", home);
+            if (is_dir(home) && fs_chdir(home) == 0) snprintf(cwd, sizeof cwd, "%s", home);
             buf_t b = {0};
             put_u8(&b, MSG_USERAUTH_SUCCESS);
             send_packet(&b);
@@ -1092,8 +1092,10 @@ static int c_pwd(int argc, char** argv) {
 static int c_cd(int argc, char** argv) {
     char path[512];
     resolve(argc > 1 ? argv[1] : "/", path, sizeof path);
-    if (!is_dir(path)) {
-        err("cd: %s: no such folder", argc > 1 ? argv[1] : "/");
+    // Programs it starts begin there too. The kernel says why not: no
+    // such folder, not a folder, or permission denied.
+    if (fs_chdir(path) < 0) {
+        err("cd: %s: %s", argc > 1 ? argv[1] : "/", last_error());
         return 1;
     }
     strlcpy(cwd, path, sizeof cwd);
@@ -1933,6 +1935,7 @@ void _start(void) {
         if (set_jump_point(session_over) == 0) serve();
         in_session = false;
         set_uid(0);
+        fs_chdir("/");
         end_programs();
         tcp_close(conn);
     }

@@ -174,6 +174,8 @@ fn handle_allowed(fs: &mut ActiveFs, perms: &mut Perms, req: FsRequest, target: 
         },
         FsRequest::ChangeDir { cwd, path } => match fs.change_dir(&cwd, &path) {
             Ok(new_path) => FsResponse::Path(new_path),
+            // FAT says "not a folder" for one that isn't there at all.
+            Err(FsError::NotADirectory) if !exists(fs, target) => FsResponse::Err(FsError::NotFound),
             Err(e) => FsResponse::Err(e),
         },
         FsRequest::Read { cwd, path } => match fs.read_file(&cwd, &path) {
