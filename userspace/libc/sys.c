@@ -313,6 +313,23 @@ long proc_tasks(char* buf, size_t max) {
     return (long)SVC(0xd, 7, buf, max, 0, 0);
 }
 
+// ---- users -------------------------------------------------------------------
+
+long getuid(void) {
+    return (long)SVC(0xd, 8, 0, 0, 0, 0);
+}
+
+long user_name(long uid, char* buf, size_t max) {
+    long n = (long)SVC(0xd, 9, uid, buf, max, 0);
+    if (n < 0 || (size_t)n >= max) return -1;
+    buf[n] = 0;
+    return n;
+}
+
+long user_id(const char* name) {
+    return (long)SVC(0xd, 10, name, 0, 0, 0);
+}
+
 // ---- file descriptors --------------------------------------------------------------
 
 long fd_open(const char* path, int flags) {
@@ -485,6 +502,23 @@ long fs_remove(const char* path) {
 
 long fs_mkdir(const char* path) {
     return (long)SVC(0x5, 4, path, c_strlen(path), 0, 0);
+}
+
+long fs_attrs(const char* path, fs_attrs_t* attrs) {
+    long r = (long)SVC(0x5, 8, path, c_strlen(path), 0, 0);
+    if (r < 0) return -1;
+    attrs->owner = r & 0xffffffff;
+    attrs->read = (r >> 32) & 1;
+    attrs->write = (r >> 33) & 1;
+    return 0;
+}
+
+long fs_chmod(const char* path, int read, int write) {
+    return (long)SVC(0x5, 6, path, c_strlen(path), (long)read, (long)write);
+}
+
+long fs_chown(const char* path, long uid) {
+    return (long)SVC(0x5, 7, path, c_strlen(path), uid, 0);
 }
 
 long fs_cwd(char* buf, size_t max_len) {

@@ -92,7 +92,10 @@ Programs from `/bin` (by name, by path or after `run`) can be joined and sent to
 |---------|--------------|
 | `help` | List commands |
 | `cd <path>` | Change folder |
-| `ls [-a] [-l] [path]`, `cat [file]...`, `mkdir`, `rm` | Files: programs in `/bin`, so they work in pipelines (`cat` with no file reads its input) |
+| `ls [-a] [-l] [path]`, `cat [file]...`, `mkdir`, `rm` | Files: programs in `/bin`, so they work in pipelines (`cat` with no file reads its input). `ls -l` shows what others may do (`r`, `w`), the owner and the size |
+| `su [name]`, `exit`, `logout`, `whoami` | Act as someone else (root by default) until `exit`; log out; who you are (see [Users](#users)) |
+| `passwd [name]`, `useradd <name>`, `userdel <name>` | Change a password (yours, or anyone's as root); add or remove an account (root) |
+| `chmod <+\|-><r\|w\|rw> <path>...`, `chown <user> <path>...` | Let others read or write a file or folder, or not (its owner or root); give it away (root) |
 | `encode [in [out]]`, `decode [in [out]]` | To and from base64 (as programs are kept on the disk, `.elf.b64`); stdin and stdout without files |
 | `write <path> <text>` | Create a file |
 | `run <path>.elf.b64` | Run a program; the shell waits until it ends, and it gets the console. Ctrl+C ends it. A bare name (`run grep ...`) is looked up in `/bin` and `/programs` |
@@ -108,9 +111,9 @@ Programs from `/bin` (by name, by path or after `run`) can be joined and sent to
 | `kai <request>` | Ask K-AI, e.g. `kai what's running?` (see below) |
 | `beep`, `snd <hz>`, `play <notes or file.wav>` | Sound: a beep, a steady tone (`snd 0` or `snd off` stops it), a tune or a WAV file (see [Sound](#sound)) |
 | `ps` | Tasks, the core each runs on, their share of its time, which are programs, and how idle each core is (`ps \| grep sshd`) |
-| `heap_remain`, `heap_test` | Kernel heap usage / stress test |
-| `mmu [addr]` | Free page frames; how an address translates |
-| `dump` | Print the CPU registers |
+| `heap_remain`, `heap_test` | Kernel heap usage / stress test (root) |
+| `mmu [addr]` | Free page frames; how an address translates (root) |
+| `dump` | Print the CPU registers (root) |
 
 The userspace programs are in `/programs` (the Programs window lists them), and typing a program's name runs it, like a command. Try `helloc` (prints, then echoes a line you type), `ui_demo` (opens a window with buttons) or `sound_demo` (a siren and a tune), or `run /programs/helloc.elf.b64` in full.
 
@@ -174,6 +177,16 @@ WAV files can be uncompressed PCM at 8, 16 or 24 bits, mono, stereo or more chan
 Programs get the same with `snd`, `beep`, `play` and `play_file` in C (`sys.h`) and `kernel.snd`, `kernel.beep`, `kernel.play` and `kernel.play_file` in K. For a program, `play`, `play_file` and `beep` wait until their sound is over, and anything a program is playing stops when it ends (or crashes, or is killed), so a stuck tone can't outlive it. The desktop plays a beep when a program prints a BEL (`\a`) and a low bonk when a program crashes, but only when nothing else is playing.
 
 Underneath, `kernel/src/drivers/virtio/snd.rs` drives QEMU's virtio-sound device (16-bit, 48 kHz, in 10 ms periods), and the `sound` task (`kernel/src/sound/`) keeps it fed, generating the square wave with a 2 ms fade at each start and stop so notes don't click.
+
+### Users
+
+KOS has user accounts, and nothing runs until someone logs in on the console (the serial port or the Terminal: they share one session). The first boot of a new disk sets up two accounts instead: `root`, who can do anything, and yours. Passwords are hashed with Argon2id. Your files go in `/home/<name>` (root's in `/root`), which only you can see into.
+
+The shell, the desktop and K-AI act as whoever is logged in, and a program acts as whoever started it: it can read and write only what they can, and only they (or root) can end it. `su [name]` acts as someone else until `exit`; `logout` ends that session's programs, closes the desktop's windows and asks again. Kernel debugging commands (`log`, `dmesg`, `mmu`, `heap_test`, ...) are root's.
+
+Permissions are simpler than Unix's: no groups and no execute bit. Each file and folder has an owner, who may always read and write it, and two flags for everyone else: `r`, others may read it (a folder: look inside), and `w`, others may write it (a folder: add and remove things in it). Something without its own setting has its folder's, so `chmod -rw ~/diary` makes everything in it private, and a private folder hides all that's inside. What you make in a folder that isn't yours is yours, readable if the folder is, not writable by others. Everything outside the home folders is root's and readable by everyone.
+
+Accounts and permissions live in `/.kos/` (KOS's `/etc`, and only root can read the two files): `/.kos/users` has a line per account, `name:uid:home:<Argon2id PHC string>`, and `/.kos/perms` a line per setting, `uid flags path` (e.g. `1000 -- /home/alice`). Paths are lower-case there, as FAT ignores case. Forgot root's password? Delete `.kos/users` from `disk.img` on the Mac (or `make disk` for a fresh one) and the next boot sets KOS up again.
 
 ### The disk
 
@@ -313,6 +326,9 @@ Under the library, a program talks to the kernel with `svc #n`, where `n` picks 
 | | 3 | path, len → 0 | `fs_remove` |
 | | 4 | path, len → 0 | `fs_mkdir` |
 | | 5 | buf, max → length of the current directory | `fs_cwd` |
+| | 6 | path, len, read, write → 0; each 1 others may, 0 they may not, -1 unchanged (owner or root) | `fs_chmod` |
+| | 7 | path, len, uid → 0 (root) | `fs_chown` |
+| | 8 | path, len → owner uid \| others may read << 32 \| others may write << 33 | `fs_attrs` |
 | 6 windows | 0 | title, elements, count → window id | `ui_create_window` |
 | | 1 | id → | `ui_close_window` |
 | | 2 | → window id | `ui_test_window` |
@@ -354,6 +370,9 @@ Under the library, a program talks to the kernel with `svc #n`, where `n` picks 
 | | 5 | buf, max → length of why the last call failed | `last_error` |
 | | 6 | path, args, `int fds[3]` → task id; its stdin, stdout and stderr are the caller's `fds[0..3]` (-1: the same one) | `spawn_io` |
 | | 7 | buf, max → length of a line per task (id, core, state, CPU %, kind, name; tab-separated), then `core` lines with each core's idle % | `proc_tasks` |
+| | 8 | → the uid this program acts as | `getuid` |
+| | 9 | uid, buf, max → length of that account's name (or the number) | `user_name` |
+| | 10 | name → that account's uid | `user_id` |
 | 14 | | buf → 0 (fills a `utsname_t`) | `uname` |
 | 15 crypto | 0 | data, len, out → 0 (32-byte SHA-256) | `sha256` |
 | | 1 | data, len, out → 0 (64-byte SHA-512) | `sha512` |

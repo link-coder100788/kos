@@ -32,7 +32,8 @@
 //    2   write bytes    write_bytes, write, printf (to stdout)
 //    3   read a line    readln (from stdin)
 //    4   memory         alloc*, free, mem_free, mem_total, mem_size
-//    5   files          fs_write, fs_read, fs_list, fs_remove, fs_mkdir, fs_cwd
+//    5   files          fs_write, fs_read, fs_list, fs_remove, fs_mkdir, fs_cwd,
+//                       fs_attrs, fs_chmod, fs_chown
 //    6   windows        ui_*, canvas_*
 //    7   time           sleep_ms, sleep_s, uptime_ms, unix_time, utc_offset
 //    8   dump           dump
@@ -40,7 +41,8 @@
 //   10   arguments      args
 //   11   random         random_bytes
 //   12   network        http_*, ping, net_address, tcp_*, udp_* (net.h)
-//   13   processes      spawn, proc_*, last_error
+//   13   processes      spawn, proc_*, last_error, getuid,
+//                       user_name, user_id
 //   14   system info    uname
 //   15   crypto         sha256, sha512, hmac_sha256, aes_gcm_* (crypto.h)
 //   16   sound          snd, beep, play, play_file, snd_stop, snd_busy
@@ -127,6 +129,20 @@ long proc_self(void);
 // cpu% kind name", tab-separated, then "core N idle%" lines. Copies up to
 // max bytes into buf and returns the full length (`ps` prints it).
 long proc_tasks(char* buf, size_t max);
+
+// ---- users -------------------------------------------------------------------
+// A program acts as the user who started it (root is uid 0, everyone else
+// 1000 and up): it can only read and write what they can.
+
+// The uid this program acts as.
+long getuid(void);
+
+// Copies uid's account name into buf, NUL-terminated (the number, if no
+// account has it). Returns its length, or -1 if it doesn't fit.
+long user_name(long uid, char* buf, size_t max);
+
+// The uid of the account called name, or -1.
+long user_id(const char* name);
 
 // ---- time ------------------------------------------------------------------
 // See time.h for dates.
@@ -261,6 +277,25 @@ long fs_mkdir(const char* path);
 // Copies the shell's current directory into buf, NUL-terminated. Returns
 // its length, or -1 if it doesn't fit.
 long fs_cwd(char* buf, size_t max_len);
+
+// Who may use a file or folder: its owner always may; others may read it
+// (a folder: look inside) if `read`, and write it (a folder: add and
+// remove things in it) if `write`. Root may do anything.
+typedef struct {
+    long owner;   // a uid; user_name() gives the name
+    int read;
+    int write;
+} fs_attrs_t;
+
+// Fills *attrs for path. Returns 0 or -1.
+long fs_attrs(const char* path, fs_attrs_t* attrs);
+
+// Sets whether others may read and write path: 1 may, 0 may not, -1 leaves
+// it as it is. Only its owner (or root) may. Returns 0 or -1.
+long fs_chmod(const char* path, int read, int write);
+
+// Gives path to uid. Only root may. Returns 0 or -1.
+long fs_chown(const char* path, long uid);
 
 typedef struct {
     char name[256];

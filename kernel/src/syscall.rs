@@ -241,8 +241,11 @@ mod filesystem {
     pub const FS_REMOVE: u64 = 3; // (path, len) -> 0
     pub const FS_MKDIR: u64 = 4;  // (path, len) -> 0
     pub const FS_CWD: u64 = 5;    // (buf, max) -> the current directory's length
+    pub const FS_CHMOD: u64 = 6;  // (path, len, read, write) -> 0; each 1 = others may, 0 = may not, -1 = unchanged
+    pub const FS_CHOWN: u64 = 7;  // (path, len, uid) -> 0; root only
+    pub const FS_ATTRS: u64 = 8;  // (path, len) -> owner uid | others may read << 32 | others may write << 33
 
-    const_unique!(FS_WRITE, FS_READ, FS_LIST, FS_REMOVE, FS_MKDIR, FS_CWD);
+    const_unique!(FS_WRITE, FS_READ, FS_LIST, FS_REMOVE, FS_MKDIR, FS_CWD, FS_CHMOD, FS_CHOWN, FS_ATTRS);
 }
 
 /// Files, with paths relative to the shell's current directory. Errors
@@ -293,6 +296,21 @@ pub fn syscall_filesystem(frame: &mut SyscallContext) {
         filesystem::FS_MKDIR => match fs_call(FsRequest::Mkdir { cwd, path: path.clone() }) {
             FsResponse::Ok => 0,
             e => failed("fs_mkdir", e),
+        },
+        filesystem::FS_CHMOD => {
+            let flag = |v: u64| match v as i64 { -1 => None, v => Some(v != 0) };
+            match fs_call(FsRequest::Chmod { cwd, path: path.clone(), read: flag(frame[2]), write: flag(frame[3]) }) {
+                FsResponse::Ok => 0,
+                e => failed("fs_chmod", e),
+            }
+        }
+        filesystem::FS_CHOWN => match fs_call(FsRequest::Chown { cwd, path: path.clone(), uid: frame[2] as crate::users::Uid }) {
+            FsResponse::Ok => 0,
+            e => failed("fs_chown", e),
+        },
+        filesystem::FS_ATTRS => match fs_call(FsRequest::Attrs { cwd, path: path.clone() }) {
+            FsResponse::Attrs(a) => a.owner as u64 | (a.read as u64) << 32 | (a.write as u64) << 33,
+            e => failed("fs_attrs", e),
         },
         _ => { log::warn!("filesystem syscall: unknown sub-command {}", syscall_num); u64::MAX }
     };
@@ -933,8 +951,11 @@ mod proc {
     pub const LAST_ERROR: u64 = 5; // (buf, max) -> why the last call failed, as text
     pub const SPAWN_IO: u64 = 6;   // (path, args, int fds[3]) -> task id; its stdin, stdout and stderr are the caller's fds[0..3] (-1: the same one)
     pub const TASKS: u64 = 7;      // (buf, max) -> length of a line per task: "id core state cpu% kind name", tab-separated, then "core N idle%" lines
+    pub const UID: u64 = 8;        // -> the uid the caller acts as
+    pub const USER_NAME: u64 = 9;  // (uid, buf, max) -> the length of that account's name (or the number)
+    pub const USER_ID: u64 = 10;   // (name) -> that account's uid
 
-    const_unique!(SPAWN, WAIT, KILL, SELF_ID, RUNNING, LAST_ERROR, SPAWN_IO, TASKS);
+    const_unique!(SPAWN, WAIT, KILL, SELF_ID, RUNNING, LAST_ERROR, SPAWN_IO, TASKS, UID, USER_NAME, USER_ID);
 }
 
 #[syscall(13)]
@@ -1002,6 +1023,16 @@ pub fn syscall_process(frame: &mut SyscallContext) {
             copy_out(frame, frame[0], frame[1], why.as_bytes())
         }
         proc::TASKS => copy_out(frame, frame[0], frame[1], scheduler::tasks_text().as_bytes()),
+        proc::UID => scheduler::current_uid() as u64,
+        proc::USER_NAME => {
+            let name = crate::users::name_of(frame[0] as crate::users::Uid);
+            copy_out(frame, frame[1], frame[2], name.as_bytes())
+        }
+        proc::USER_ID => match user_cstr(frame, frame[0]).map(crate::users::uid_of) {
+            Some(Some(uid)) => uid as u64,
+            Some(None) => fail("no such user"),
+            None => fail("bad name"),
+        },
         _ => { log::warn!("process syscall: unknown sub-command {}", syscall_num); u64::MAX }
     };
 }

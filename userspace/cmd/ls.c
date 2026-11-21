@@ -2,7 +2,9 @@
 //
 //     ls [-a] [-l] [path]...
 //
-// -a shows names starting with '.', -l puts each one's size in front.
+// -a shows names starting with '.', -l puts in front of each one what
+// others may do with it (r read, w write; its owner always may), its
+// owner, and its size.
 // Folders end in '/'. On the console names go in columns; into a pipe or
 // a file (`ls | grep txt`), one a line.
 #include "../libc/sys.h"
@@ -25,12 +27,27 @@ static void size_text(uint32_t size, char* out, size_t n) {
     else snprintf(out, n, "%u.%u M", (unsigned)(size >> 20), (unsigned)((size & 0xfffff) * 10 >> 20));
 }
 
-static void show(fs_entry_t* entries, int count) {
+// The name of uid's account, remembering the last one asked for.
+static const char* owner_name(long uid) {
+    static long last = -1;
+    static char name[32];
+    if (uid != last && user_name(uid, name, sizeof name) < 0) snprintf(name, sizeof name, "%ld", uid);
+    last = uid;
+    return name;
+}
+
+// `folder` is where the entries are, or NULL if they're paths themselves.
+static void show(const char* folder, fs_entry_t* entries, int count) {
     if (longform) {
         for (int i = 0; i < count; i++) {
-            char size[16] = "-";
+            char size[16] = "-", path[512];
             if (!entries[i].is_dir) size_text(entries[i].size, size, sizeof size);
-            printf("%9s  %s%s\n", size, entries[i].name, entries[i].is_dir ? "/" : "");
+            if (folder) snprintf(path, sizeof path, "%s/%s", folder, entries[i].name);
+            else snprintf(path, sizeof path, "%s", entries[i].name);
+            fs_attrs_t a;
+            if (fs_attrs(path, &a) == 0) printf("%c%c %-10s", a.read ? 'r' : '-', a.write ? 'w' : '-', owner_name(a.owner));
+            else printf("?? %-10s", "?");
+            printf(" %9s  %s%s\n", size, entries[i].name, entries[i].is_dir ? "/" : "");
         }
         return;
     }
@@ -64,13 +81,13 @@ static int list(const char* path, int heading) {
     if (size >= 0) {
         fs_entry_t e = { .is_dir = 0, .size = (uint32_t)size };
         snprintf(e.name, sizeof e.name, "%s", path);
-        show(&e, 1);
+        show(NULL, &e, 1);
         return 0;
     }
     int count;
     fs_entry_t* entries = fs_list(path, &count);
     if (!entries) {
-        dprintf(STDERR_FD, "ls: %s: no such file or folder\n", path);
+        dprintf(STDERR_FD, "ls: %s: %s\n", path, last_error());
         return 1;
     }
     int shown = 0;
@@ -78,7 +95,7 @@ static int list(const char* path, int heading) {
         if (all || entries[i].name[0] != '.') entries[shown++] = entries[i];
     qsort(entries, shown, sizeof *entries, compare);
     if (heading) printf("%s:\n", path);
-    show(entries, shown);
+    show(path, entries, shown);
     free(entries);
     return 0;
 }
