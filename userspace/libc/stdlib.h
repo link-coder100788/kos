@@ -1,8 +1,8 @@
 #ifndef C_STDLIB_H
 #define C_STDLIB_H
 
-// Memory, number parsing, sorting and random numbers. (exit() is in
-// sys.h.)
+// Memory, number parsing, sorting, random numbers, and ending the
+// program.
 
 #include <stddef.h>
 #include "sys.h"
@@ -15,6 +15,23 @@ void* calloc(size_t n, size_t size);
 // Resizes an allocation, moving it if need be. realloc(NULL, n) is
 // malloc(n); realloc(p, 0) frees p and returns NULL.
 void* realloc(void* ptr, size_t size);
+
+#define EXIT_SUCCESS 0
+#define EXIT_FAILURE 1
+
+// Ends the program with `status` after calling what atexit() registered,
+// last first.
+__attribute__((noreturn)) void exit(int status);
+// Ends it straight away, without the atexit() functions.
+__attribute__((noreturn)) void _Exit(int status);
+// Ends it as if killed by SIGABRT: exit status 134.
+__attribute__((noreturn)) void abort(void);
+// Has exit() call f. Up to 32; returns 0, or -1 if they're used up.
+int atexit(void (*f)(void));
+// Would run a command line with a shell, but KOS has none that can run
+// one without a window yet: system(NULL) is 0 (no shell), and anything
+// else is -1 with errno ENOSYS.
+int system(const char* command);
 
 int abs(int x);
 long labs(long x);

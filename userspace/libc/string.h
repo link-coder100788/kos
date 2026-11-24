@@ -40,6 +40,9 @@ size_t strspn(const char* s, const char* accept);
 size_t strcspn(const char* s, const char* reject);
 char* strpbrk(const char* s, const char* accept);
 
+// strcmp: KOS has only the "C" locale.
+int strcoll(const char* a, const char* b);
+
 // What an errno value (errno.h) means, in words.
 char* strerror(int e);
 // memset(dst, 0, n).

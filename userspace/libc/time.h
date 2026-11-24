@@ -11,6 +11,15 @@
 typedef long time_t;
 #endif
 
+// Processor time used, in CLOCKS_PER_SEC ticks: KOS gives the time since
+// the program started instead, near enough for a program that keeps busy.
+typedef long clock_t;
+#define CLOCKS_PER_SEC 1000000L
+clock_t clock(void);
+
+// t1 - t0, in seconds.
+double difftime(time_t t1, time_t t0);
+
 struct tm {
     int tm_sec;    // 0-59
     int tm_min;    // 0-59
@@ -20,6 +29,7 @@ struct tm {
     int tm_year;   // years since 1900
     int tm_wday;   // 0-6, Sunday is 0
     int tm_yday;   // 0-365
+    int tm_isdst;  // daylight saving time: always 0 (KOS has a fixed offset)
 };
 
 // Seconds since 1970-01-01 00:00 UTC (also stored in *t if t isn't NULL),

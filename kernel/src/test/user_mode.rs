@@ -691,6 +691,52 @@ fn test_programs_can_start_at_main() {
     assert_eq!((status, printed.as_str()), (0, "hello from main\n"));
 }
 
+/// Lua (ports/lua, built unchanged against the libc) runs a script:
+/// arithmetic, strings, tables, closures, errors, coroutines, files
+/// through io, os and math.
+fn test_lua_runs_a_script() {
+    const SCRIPT: &str = "/lua-test.lua";
+    write_file(SCRIPT, r##"
+local t = {}
+for i = 1, 10 do t[#t + 1] = i * i end
+print(#t, t[10], 7 // 2, 7 / 2, 2^10, 10 % 3)
+print(string.format("%5.2f|%g|%d|%s|%x", math.pi, 1e20, 42, "hi", 255))
+print(("hello world"):upper(), ("a,b,,c"):gsub(",", ";"), ("abc"):rep(3, "-"))
+local function counter() local n = 0 return function() n = n + 1 return n end end
+local c = counter(); c(); print(c())
+print(pcall(function() error("boom") end))
+print(select("#", 1, nil, 3), tostring(nil), tonumber("0x10"), math.type(1), math.type(1.0))
+local co = coroutine.wrap(function(a) local b = coroutine.yield(a + 1) return b * 2 end)
+print(co(1), co(10))
+local f = assert(io.open("/lua-test.txt", "w"))
+f:write("line one\n", 42, "\n")
+f:close()
+for line in io.lines("/lua-test.txt") do io.write("[", line, "]") end
+print()
+print(os.remove("/lua-test.txt"), io.open("/lua-test.txt") == nil)
+print(math.log(8, 2), math.floor(-2.5), math.max(3, 9, 1), math.huge, -math.huge)
+print(type(os.time()), os.date("!%Y", 0), os.getenv("HOME"))
+table.sort(t, function(a, b) return a > b end)
+print(table.concat(t, " ", 1, 3), next({}), utf8.char(72, 228))
+"##);
+    let (status, printed) = run_program("/bin/lua.elf.b64", SCRIPT, 10_000);
+    remove_file(SCRIPT);
+    assert_eq!(status, 0, "lua failed: {}", printed);
+    let expected = "10\t100\t3\t3.5\t1024.0\t1\n\
+         \x203.14|1e+20|42|hi|ff\n\
+         HELLO WORLD\ta;b;;c\tabc-abc-abc\n\
+         2\n\
+         false\t/lua-test.lua:9: boom\n\
+         3\tnil\t16\tinteger\tfloat\n\
+         2\t20\n\
+         [line one][42]\n\
+         true\ttrue\n\
+         3.0\t-3\t9\tinf\t-inf\n\
+         number\t1970\tnil\n\
+         100 81 64\tnil\tH\u{e4}\n";
+    assert_eq!(printed, expected);
+}
+
 pub fn run() {
     // The loader task reaps finished programs; let boot settle first.
     sleep_ms(200);
@@ -727,5 +773,6 @@ pub fn run() {
         &test_tcc_compiles_and_runs_a_program,
         &test_posix_file_calls,
         &test_programs_can_start_at_main,
+        &test_lua_runs_a_script,
     ]);
 }

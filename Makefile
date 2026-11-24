@@ -234,7 +234,16 @@ CMD_PROGS   := $(patsubst userspace/cmd/%.c,$(CMD_OUT)/%.elf,$(CMD_SRC))
 # Laid out as the disk will be: build/user/cmd/disk/bin/<name>.elf.b64.
 CMD_B64     := $(patsubst $(CMD_OUT)/%,$(CMD_OUT)/disk/bin/%.b64,$(CMD_PROGS))
 
+# Ports: software from elsewhere, built unchanged against the libc (see
+# each folder's KOS.md). They go in /bin like the system commands.
+LUA_SRC     := $(filter-out ports/lua/src/luac.c,$(wildcard ports/lua/src/*.c))
+CMD_PROGS   += $(CMD_OUT)/lua.elf
+CMD_B64     += $(CMD_OUT)/disk/bin/lua.elf.b64
+
 user: $(USER_PROGS) $(USER_B64) $(CMD_PROGS) $(CMD_B64)
+
+$(CMD_OUT)/lua.elf: $(LUA_SRC) $(wildcard ports/lua/src/*.h) $(LIBC_SRC) $(LIBC_H) | $(CMD_OUT)
+	$(USER_CC) $(USER_CFLAGS) -O2 -o $@ $(LUA_SRC) $(filter %.c %.S,$(LIBC_SRC))
 
 $(USER_OUT)/%.elf: userspace/prog/%.c $(LIBC_SRC) $(LIBC_H) | $(USER_OUT)
 	$(USER_CC) $(USER_CFLAGS) -o $@ $(filter %.c %.S,$^)

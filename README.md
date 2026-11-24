@@ -636,6 +636,10 @@ A `.c` file in `userspace/cmd/` is a system command instead: `make disk` puts it
 
 `edit` (`userspace/cmd/edit.c`) is a text editor in its own window: `edit [file]` (a new file is made when you save). Click to place the cursor, drag or double-click to select, scroll with the wheel. Ctrl+S saves, Ctrl+F finds (Enter again for the next match), Ctrl+G goes to a line, Ctrl+Z / Ctrl+Y undo and redo, Ctrl+A selects all, Ctrl+X / Ctrl+C / Ctrl+V cut, copy and paste (the whole line when nothing is selected), and Ctrl+Q quits, asking first about unsaved changes. Programs' canvas windows get Ctrl+letter as 1-26 (`CANVAS_CTRL('s')`) and the mouse wheel as `CANVAS_SCROLL`.
 
+### Ports
+
+`ports/` holds software from elsewhere, built unchanged against KOS's C library, as the yardstick for how much of POSIX and standard C it has. Each folder's `KOS.md` says where it came from. The first is Lua 5.4.7 (`ports/lua/`): `lua script.lua` runs a script. Strings, tables, coroutines, `io` files, `os.time`/`os.date` and the whole `math` library work; `os.execute` doesn't yet, since KOS has no shell that runs a command line without a window.
+
 ### In K
 
 K is a small statically typed language compiled to AArch64 by a compiler built into the kernel (`kernel/src/k/`).
@@ -696,6 +700,8 @@ kernel/
 userspace/
   libc/                the C library: syscalls (sys.h), printf (print/print.h), canvases (canvas.h), maths (math.h), OpenGL (gl.h)
   prog/                programs; every .c / .s file here is built and put on the disk
+  cmd/                 system commands, in /bin
+ports/lua/             Lua 5.4.7, unchanged, as /bin/lua
 disk/                  files that go on disk.img
 tools/mkdisk/          host tool that builds disk.img (and puts files into an existing one)
 tools/assistant/       K-AI's training: intents, data generator, model, tests, export

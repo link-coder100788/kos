@@ -15,8 +15,12 @@ double exp(double x);
 // Natural logarithm (base e). NaN for x < 0, -infinity for 0.
 double log(double x);
 
-// Base-10 logarithm.
+// Base-10 and base-2 logarithms (log2 of a power of two is exact).
 double log10(double x);
+double log2(double x);
+
+// 2^x.
+double exp2(double x);
 
 // x^y. NaN for a negative x with a non-integer y.
 double pow(double x, double y);
@@ -46,6 +50,10 @@ double trunc(double x);
 
 // x * 2^e.
 double ldexp(double x, int e);
+// The other way: x = m * 2^*e with m in [0.5, 1) (or 0), returning m.
+double frexp(double x, int* e);
+// Splits x into a whole part (*whole) and a fraction, both with x's sign.
+double modf(double x, double* whole);
 // ldexp, in double precision.
 long double ldexpl(long double x, int e);
 
@@ -56,15 +64,31 @@ double fabs(double x);
 double fmin(double a, double b);
 double fmax(double a, double b);
 
+// (float.h may have defined these already.)
+#ifndef INFINITY
 #ifdef __TINYC__
 // tcc has no builtins for these: a too-big constant is infinity, 0/0 is NaN.
 #define INFINITY (1e500)
-#define NAN (0.0/0.0)
 #else
 #define INFINITY (__builtin_inf())
+#endif
+#endif
+#ifndef NAN
+#ifdef __TINYC__
+#define NAN (0.0/0.0)
+#else
 #define NAN (__builtin_nan(""))
 #endif
+#endif
+#define HUGE_VAL ((double)INFINITY)
+#define HUGE_VALF ((float)INFINITY)
+#define HUGE_VALL ((long double)INFINITY)
 static inline int isnan(double x) { return x != x; }
 static inline int isinf(double x) { return x == INFINITY || x == -INFINITY; }
+static inline int isfinite(double x) { return !isnan(x) && !isinf(x); }
+static inline int signbit(double x) {
+    union { double d; unsigned long long u; } b = { x };
+    return (int)(b.u >> 63);
+}
 
 #endif //C_MATH_H

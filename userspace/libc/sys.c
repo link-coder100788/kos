@@ -1,9 +1,28 @@
 #include "sys.h"
 #include "syscall.h"
 
-__attribute__((noreturn)) void exit(int status) {
+// What atexit() registered, run by exit() last first.
+static void (*at_exit[32])(void);
+static int at_exit_count;
+
+int atexit(void (*f)(void)) {
+    if (at_exit_count == 32) return -1;
+    at_exit[at_exit_count++] = f;
+    return 0;
+}
+
+__attribute__((noreturn)) void _Exit(int status) {
     KOS_SVC(0x0, 0, status, 0, 0, 0, 0);
     __builtin_unreachable();
+}
+
+__attribute__((noreturn)) void exit(int status) {
+    while (at_exit_count > 0) at_exit[--at_exit_count]();
+    _Exit(status);
+}
+
+__attribute__((noreturn)) void abort(void) {
+    _Exit(134);
 }
 
 void write_byte(const uint8_t* byte) {

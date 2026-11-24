@@ -2,6 +2,9 @@
 #include "string.h"
 #include "ctype.h"
 #include "math.h"
+#include "errno.h"
+#include "locale.h"
+#include "signal.h"
 
 void* malloc(size_t size) {
     return alloc(size);
@@ -120,6 +123,59 @@ double atof(const char* s) { return strtod(s, NULL); }
 float strtof(const char* s, char** end) { return (float)strtod(s, end); }
 
 long double strtold(const char* s, char** end) { return strtod(s, end); }
+
+int system(const char* command) {
+    if (!command) return 0;
+    errno = ENOSYS;
+    return -1;
+}
+
+// ---- locale.h ------------------------------------------------------------------
+
+char* setlocale(int category, const char* locale) {
+    (void)category;
+    if (!locale || !*locale || !strcmp(locale, "C") || !strcmp(locale, "POSIX")) return "C";
+    return NULL;
+}
+
+struct lconv* localeconv(void) {
+    static struct lconv c = {
+        ".", "", "", "", "", "", "", "", "", "",
+        127, 127, 127, 127, 127, 127, 127, 127,
+    };
+    return &c;
+}
+
+// ---- signal.h ------------------------------------------------------------------
+
+static sighandler_t handlers[NSIG];
+
+sighandler_t signal(int sig, sighandler_t handler) {
+    if (sig <= 0 || sig >= NSIG || sig == SIGKILL || sig == SIGSTOP) {
+        errno = EINVAL;
+        return SIG_ERR;
+    }
+    sighandler_t old = handlers[sig];
+    handlers[sig] = handler;
+    return old;
+}
+
+int raise(int sig) {
+    if (sig <= 0 || sig >= NSIG) {
+        errno = EINVAL;
+        return -1;
+    }
+    sighandler_t h = handlers[sig];
+    if (h == SIG_IGN) return 0;
+    if (h == SIG_DFL) {
+        if (sig == SIGCHLD || sig == SIGWINCH || sig == SIGCONT) return 0;
+        _Exit(128 + sig);
+    }
+    // As on Unix's signal(), the handler goes back to the default first.
+    handlers[sig] = SIG_DFL;
+    h(sig);
+    return 0;
+}
 
 char* getenv(const char* name) {
     (void)name;

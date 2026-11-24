@@ -62,6 +62,7 @@ struct tm* gmtime_r(const time_t* t, struct tm* out) {
     out->tm_mon = m - 1;
     out->tm_mday = d;
     out->tm_yday = (int)(days - days_from_civil(y, 1, 1));
+    out->tm_isdst = 0;
     return out;
 }
 
@@ -140,4 +141,18 @@ size_t strftime(char* buf, size_t size, const char* f, const struct tm* tm) {
     }
     if (size > 0) buf[n] = '\0';
     return n;
+}
+
+clock_t clock(void) {
+    static uint64_t start_ms = 0;
+    static int started = 0;
+    if (!started) {
+        start_ms = uptime_ms();
+        started = 1;
+    }
+    return (clock_t)(uptime_ms() - start_ms) * (CLOCKS_PER_SEC / 1000);
+}
+
+double difftime(time_t t1, time_t t0) {
+    return (double)(t1 - t0);
 }

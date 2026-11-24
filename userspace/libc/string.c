@@ -207,6 +207,10 @@ char* strtok(char* s, const char* delim) {
     return strtok_r(s, delim, &save);
 }
 
+int strcoll(const char* a, const char* b) {
+    return strcmp(a, b);
+}
+
 char* strerror(int e) {
     switch (e) {
         case 0: return "no error";

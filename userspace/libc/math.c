@@ -102,6 +102,47 @@ double log10(double x) {
     return log(x) * INV_LN10;
 }
 
+double log2(double x) {
+    if (!(x > 0) || x == INF) return log(x);
+    // The exponent exactly, plus log2 of what's left (in [0.5, 1)).
+    int e;
+    double m = frexp(x, &e);
+    if (m == 0.5) return e - 1;
+    return e + log(m) * INV_LN2;
+}
+
+double exp2(double x) {
+    return pow(2.0, x);
+}
+
+double frexp(double x, int* e) {
+    *e = 0;
+    if (x == 0 || x != x || x == INF || x == -INF) return x;
+    bits_t b = { .d = x };
+    int scale = 0;
+    if (((b.u >> 52) & 0x7ff) == 0) {
+        // Subnormal: scale it into the normal range first.
+        b.d = x * 18014398509481984.0;  // 2^54
+        scale = 54;
+    }
+    *e = (int)((b.u >> 52) & 0x7ff) - 1022 - scale;
+    // The same fraction with the exponent of [0.5, 1).
+    b.u = (b.u & 0x800fffffffffffffULL) | 0x3fe0000000000000ULL;
+    return b.d;
+}
+
+double modf(double x, double* whole) {
+    if (x != x) return *whole = x;
+    if (x == INF || x == -INF) {
+        *whole = x;
+        return x > 0 ? 0.0 : -0.0;
+    }
+    *whole = trunc(x);
+    double frac = x - *whole;
+    // Keep the sign of zero: modf(-3.0) is -0.0.
+    return frac == 0 ? (x < 0 ? -0.0 : 0.0) : frac;
+}
+
 // ---- pow ----------------------------------------------------------------------------
 
 double pow(double x, double y) {

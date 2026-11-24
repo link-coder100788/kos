@@ -43,6 +43,15 @@ extern FILE* stdout;
 extern FILE* stderr;
 
 #define EOF (-1)
+#define BUFSIZ 4096
+#define FILENAME_MAX 4096
+#define FOPEN_MAX 64
+#define L_tmpnam 32
+#define TMP_MAX 10000
+// setvbuf() modes. Streams aren't buffered, so there's nothing to set.
+#define _IOFBF 0
+#define _IOLBF 1
+#define _IONBF 2
 #ifndef SEEK_SET
 #define SEEK_SET 0
 #define SEEK_CUR 1
@@ -55,6 +64,17 @@ FILE* fopen(const char* path, const char* mode);
 FILE* fdopen(int fd, const char* mode);
 // Writes the file back if it changed. 0, or EOF if that failed.
 int fclose(FILE* f);
+// Closes f's file and opens `path` in its place (with path NULL, keeps
+// the file: KOS can't change a mode). Returns f, or NULL.
+FILE* freopen(const char* path, const char* mode, FILE* f);
+// A new empty file (in /tmp), removed when closed... (KOS can't remove an
+// open file, so it's left there; tmpnam names are unique).
+FILE* tmpfile(void);
+// A name for a file nothing has yet: into buf (L_tmpnam bytes), or a
+// static buffer if that's NULL.
+char* tmpnam(char* buf);
+int setvbuf(FILE* f, char* buf, int mode, size_t size);
+void setbuf(FILE* f, char* buf);
 // Nothing waits in a buffer, so there's nothing to do.
 int fflush(FILE* f);
 
@@ -62,6 +82,9 @@ size_t fread(void* buf, size_t size, size_t n, FILE* f);
 size_t fwrite(const void* buf, size_t size, size_t n, FILE* f);
 int fgetc(FILE* f);
 #define getc fgetc
+int getchar(void);
+// Puts c back, for the next read to return. One at a time.
+int ungetc(int c, FILE* f);
 // Reads a line (keeping its newline) into buf, at most size - 1 bytes.
 char* fgets(char* buf, int size, FILE* f);
 int fputc(int c, FILE* f);
@@ -73,9 +96,12 @@ int vfprintf(FILE* f, const char* format, va_list args);
 int fseek(FILE* f, long offset, int whence);
 long ftell(FILE* f);
 void rewind(FILE* f);
-// Whether a read hit the end, or anything failed.
+// Whether a read hit the end, or anything failed; clearerr forgets both.
 int feof(FILE* f);
 int ferror(FILE* f);
+void clearerr(FILE* f);
+// Prints s, ": " and strerror(errno) to stderr.
+void perror(const char* s);
 int fileno(FILE* f);
 
 // Deletes a file, or an empty folder.

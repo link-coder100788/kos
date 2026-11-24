@@ -174,9 +174,11 @@ struct FILE {
     int fd;
     int eof;
     int err;
+    // What ungetc() put back, or EOF.
+    int unget;
 };
 
-static FILE console[3] = { { 0 }, { 1 }, { 2 } };
+static FILE console[3] = { { 0, 0, 0, EOF }, { 1, 0, 0, EOF }, { 2, 0, 0, EOF } };
 FILE* stdin = &console[0];
 FILE* stdout = &console[1];
 FILE* stderr = &console[2];
@@ -189,18 +191,24 @@ FILE* fdopen(int fd, const char* mode) {
         return NULL;
     }
     f->fd = fd;
+    f->unget = EOF;
     return f;
 }
 
-FILE* fopen(const char* path, const char* mode) {
+// open()'s flags for an fopen() mode, or -1.
+static int mode_flags(const char* mode) {
     int plus = strchr(mode, '+') != NULL;
-    int flags;
     switch (mode[0]) {
-        case 'r': flags = plus ? O_RDWR : O_RDONLY; break;
-        case 'w': flags = (plus ? O_RDWR : O_WRONLY) | O_CREAT | O_TRUNC; break;
-        case 'a': flags = (plus ? O_RDWR : O_WRONLY) | O_CREAT | O_APPEND; break;
-        default: errno = EINVAL; return NULL;
+        case 'r': return plus ? O_RDWR : O_RDONLY;
+        case 'w': return (plus ? O_RDWR : O_WRONLY) | O_CREAT | O_TRUNC;
+        case 'a': return (plus ? O_RDWR : O_WRONLY) | O_CREAT | O_APPEND;
+        default: errno = EINVAL; return -1;
     }
+}
+
+FILE* fopen(const char* path, const char* mode) {
+    int flags = mode_flags(mode);
+    if (flags < 0) return NULL;
     int fd = open(path, flags);
     if (fd < 0) return NULL;
     FILE* f = fdopen(fd, mode);
@@ -214,6 +222,49 @@ int fclose(FILE* f) {
     return result < 0 ? EOF : 0;
 }
 
+FILE* freopen(const char* path, const char* mode, FILE* f) {
+    f->eof = f->err = 0;
+    f->unget = EOF;
+    if (!path) return f;
+    int flags = mode_flags(mode);
+    if (flags < 0) return NULL;
+    int fd = open(path, flags);
+    if (fd < 0) return NULL;
+    // Into the descriptor f already had, so stdin stays 0.
+    if (dup2(fd, f->fd) < 0) {
+        close(fd);
+        return NULL;
+    }
+    close(fd);
+    return f;
+}
+
+char* tmpnam(char* buf) {
+    static char name[L_tmpnam];
+    static unsigned counter;
+    if (!buf) buf = name;
+    fs_mkdir("/tmp");
+    struct stat st;
+    do {
+        snprintf(buf, L_tmpnam, "/tmp/t%lx%u", (unsigned long)(uptime_ms() & 0xffffff), counter++);
+    } while (stat(buf, &st) == 0);
+    return buf;
+}
+
+FILE* tmpfile(void) {
+    char name[L_tmpnam];
+    return fopen(tmpnam(name), "w+");
+}
+
+int setvbuf(FILE* f, char* buf, int mode, size_t size) {
+    (void)f; (void)buf; (void)mode; (void)size;
+    return 0;
+}
+
+void setbuf(FILE* f, char* buf) {
+    (void)f; (void)buf;
+}
+
 int fflush(FILE* f) {
     (void)f;
     return 0;
@@ -222,13 +273,25 @@ int fflush(FILE* f) {
 size_t fread(void* buf, size_t size, size_t n, FILE* f) {
     size_t want = size * n;
     if (want == 0) return 0;
-    ssize_t got = read(f->fd, buf, want);
-    if (got < 0) {
-        f->err = 1;
-        return 0;
+    size_t done = 0;
+    if (f->unget != EOF) {
+        *(unsigned char*)buf = (unsigned char)f->unget;
+        f->unget = EOF;
+        done = 1;
     }
-    if ((size_t)got < want) f->eof = 1;
-    return (size_t)got / size;
+    while (done < want) {
+        ssize_t got = read(f->fd, (char*)buf + done, want - done);
+        if (got < 0) {
+            f->err = 1;
+            break;
+        }
+        if (got == 0) {
+            f->eof = 1;
+            break;
+        }
+        done += (size_t)got;
+    }
+    return done / size;
 }
 
 size_t fwrite(const void* buf, size_t size, size_t n, FILE* f) {
@@ -243,6 +306,17 @@ size_t fwrite(const void* buf, size_t size, size_t n, FILE* f) {
 int fgetc(FILE* f) {
     unsigned char c;
     return fread(&c, 1, 1, f) == 1 ? c : EOF;
+}
+
+int getchar(void) {
+    return fgetc(stdin);
+}
+
+int ungetc(int c, FILE* f) {
+    if (c == EOF || f->unget != EOF) return EOF;
+    f->unget = (unsigned char)c;
+    f->eof = 0;
+    return f->unget;
 }
 
 char* fgets(char* buf, int size, FILE* f) {
@@ -295,13 +369,17 @@ int fprintf(FILE* f, const char* format, ...) {
 }
 
 int fseek(FILE* f, long offset, int whence) {
+    // A put-back byte was one before the descriptor's position.
+    if (whence == SEEK_CUR && f->unget != EOF) offset--;
     if (lseek(f->fd, offset, whence) < 0) return -1;
     f->eof = 0;
+    f->unget = EOF;
     return 0;
 }
 
 long ftell(FILE* f) {
-    return lseek(f->fd, 0, SEEK_CUR);
+    long pos = lseek(f->fd, 0, SEEK_CUR);
+    return pos < 0 || f->unget == EOF ? pos : pos - 1;
 }
 
 void rewind(FILE* f) {
@@ -311,6 +389,12 @@ void rewind(FILE* f) {
 
 int feof(FILE* f) { return f->eof; }
 int ferror(FILE* f) { return f->err; }
+void clearerr(FILE* f) { f->eof = f->err = 0; }
+
+void perror(const char* s) {
+    if (s && *s) fprintf(stderr, "%s: %s\n", s, strerror(errno));
+    else fprintf(stderr, "%s\n", strerror(errno));
+}
 int fileno(FILE* f) { return f->fd; }
 
 int remove(const char* path) {
