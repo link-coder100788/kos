@@ -294,6 +294,21 @@ impl Object {
         Ok(pos as u64)
     }
 
+    /// (kind, size, owner) for fstat: one of syscall's `STAT_*` kinds, a
+    /// file's size (as it is now, in memory), and who opened it.
+    pub fn stat(&self) -> (u32, u64, Uid) {
+        use crate::syscall::{STAT_CONSOLE, STAT_FILE, STAT_NULL, STAT_PIPE};
+        match self {
+            Object::Console => (STAT_CONSOLE, 0, scheduler::current_uid()),
+            Object::Null => (STAT_NULL, 0, scheduler::current_uid()),
+            Object::File(file) => {
+                let f = file.lock();
+                (STAT_FILE, f.data.len() as u64, f.uid)
+            }
+            Object::PipeRead(_) | Object::PipeWrite(_) => (STAT_PIPE, 0, scheduler::current_uid()),
+        }
+    }
+
     pub fn is_console(&self) -> bool {
         matches!(self, Object::Console)
     }

@@ -48,17 +48,20 @@ fn libc_dir() -> PathBuf {
 }
 
 /// The library's .c and .S files: the folder's own and one level of
-/// subfolders, except crt/ (the start files tcc links; these programs have
-/// their own _start).
+/// subfolders, except crt/crti.c and crt/crtn.c (empty start files only tcc
+/// links). crt/crt1.c is in: its weak _start calls main() for a program
+/// with no _start of its own.
 fn libc_sources(dir: &Path) -> Vec<PathBuf> {
     let mut sources = Vec::new();
     let mut dirs = vec![dir.to_path_buf()];
     if let Ok(entries) = fs::read_dir(dir) {
-        dirs.extend(entries.flatten().map(|e| e.path()).filter(|p| p.is_dir() && !p.ends_with("crt")));
+        dirs.extend(entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()));
     }
     for d in dirs {
         let Ok(entries) = fs::read_dir(&d) else { continue };
-        sources.extend(entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "c" || x == "S")));
+        sources.extend(entries.flatten().map(|e| e.path()).filter(|p| {
+            p.extension().is_some_and(|x| x == "c" || x == "S") && !p.ends_with("crt/crti.c") && !p.ends_with("crt/crtn.c")
+        }));
     }
     sources.sort();
     sources

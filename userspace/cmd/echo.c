@@ -1,14 +1,13 @@
-#include "../libc/sys.h"
+// echo: prints its arguments, separated by spaces. It starts at main(),
+// like a program anywhere else (the libc's crt1.c calls it).
 
-#define MAX_ARGS 16
+#include <stdio.h>
 
-void _start(void) {
-    char* argv[MAX_ARGS];
-    int argc = get_argv(argv, MAX_ARGS);
-    for (int i = 0; i < argc; i++) {
-        if (i > 0) { write(" "); }
-        write(argv[i]);
+int main(int argc, char** argv) {
+    for (int i = 1; i < argc; i++) {
+        if (i > 1) fputs(" ", stdout);
+        fputs(argv[i], stdout);
     }
-    write("\n");
-    exit(0);
+    fputs("\n", stdout);
+    return 0;
 }

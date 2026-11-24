@@ -68,7 +68,7 @@ static int grep_file(const char* path, const char* pattern, int show_name) {
             if (show_name) printf("%s:", path);
             if (line_numbers) printf("%d:", (int)number);
             write_bytes((const uint8_t*)data + start, end - start);
-            write("\n");
+            write_str("\n");
         }
         start = end + 1;
         number++;

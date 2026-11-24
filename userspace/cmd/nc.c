@@ -86,7 +86,7 @@ static void print_datagram(const char* data, long len, const udp_from_t* from, b
 static int run_udp_listen(const nc_args_t* parsed) {
     long sock = udp_open(parsed->port);
     if (sock < 0) {
-        write("nc: can't listen: ");
+        write_str("nc: can't listen: ");
         writeln(last_error());
         return 1;
     }
@@ -96,7 +96,7 @@ static int run_udp_listen(const nc_args_t* parsed) {
         udp_from_t from;
         long n = udp_recv(sock, received, sizeof(received), &from);
         if (n < 0) {
-            write("nc: receive failed: ");
+            write_str("nc: receive failed: ");
             writeln(last_error());
             break;
         }
@@ -109,7 +109,7 @@ static int run_udp_listen(const nc_args_t* parsed) {
 static int run_udp(const nc_args_t* parsed) {
     long sock = udp_open(0);
     if (sock < 0) {
-        write("nc: can't open a socket: ");
+        write_str("nc: can't open a socket: ");
         writeln(last_error());
         return 1;
     }
@@ -120,7 +120,7 @@ static int run_udp(const nc_args_t* parsed) {
         if (input_len < 0) break;
         input[input_len++] = '\n';
         if (udp_send(sock, parsed->host, parsed->port, input, (size_t)input_len) < 0) {
-            write("nc: send failed: ");
+            write_str("nc: send failed: ");
             writeln(last_error());
             break;
         }
@@ -144,7 +144,7 @@ static bool print_received(long conn) {
         if (n == TCP_NOTHING_YET) return true;
         if (n == 0) return false;
         if (n < 0) {
-            write("nc: receive failed: ");
+            write_str("nc: receive failed: ");
             writeln(last_error());
             return false;
         }
@@ -167,7 +167,7 @@ static void talk(long conn) {
         }
         input[input_len++] = '\n';
         if (tcp_send(conn, input, (size_t)input_len) < 0) {
-            write("nc: send failed: ");
+            write_str("nc: send failed: ");
             writeln(last_error());
             break;
         }
@@ -180,7 +180,7 @@ static void talk(long conn) {
 static int run_nc(const nc_args_t* parsed) {
     long conn = tcp_connect(parsed->host, parsed->port);
     if (conn < 0) {
-        write("nc: connection failed: ");
+        write_str("nc: connection failed: ");
         writeln(last_error());
         return 1;
     }
@@ -192,7 +192,7 @@ static int run_nc(const nc_args_t* parsed) {
 static int run_tcp_listen(const nc_args_t* parsed) {
     long listener = tcp_listen(parsed->port);
     if (listener < 0) {
-        write("nc: can't listen: ");
+        write_str("nc: can't listen: ");
         writeln(last_error());
         return 1;
     }
@@ -202,7 +202,7 @@ static int run_tcp_listen(const nc_args_t* parsed) {
     // Only the one connection.
     tcp_listen_close(listener);
     if (conn < 0) {
-        write("nc: accept failed: ");
+        write_str("nc: accept failed: ");
         writeln(last_error());
         return 1;
     }

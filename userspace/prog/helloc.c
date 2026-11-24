@@ -3,8 +3,8 @@
 
 void _start(void) {
     writeln("Hello, KOS!");
-    write("This string ");
-    write("was printed from a functional c program ");
+    write_str("This string ");
+    write_str("was printed from a functional c program ");
     writeln("compiled on my mac!");
     uint8_t em = 33;
     write_byte(&em);

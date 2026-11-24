@@ -28,11 +28,12 @@
 //   svc  what           libc
 //    0   exit           exit
 //    1   write a byte   write_byte (to stdout)
-//    2   write bytes    write_bytes, write, printf (to stdout)
+//    2   write bytes    write_bytes, write_str, printf (to stdout)
 //    3   read a line    readln (from stdin)
 //    4   memory         alloc*, free, mem_free, mem_total, mem_size
 //    5   files          fs_write, fs_read, fs_list, fs_remove, fs_mkdir, fs_cwd,
-//                       fs_attrs, fs_chmod, fs_chown, fs_chdir
+//                       fs_attrs, fs_chmod, fs_chown, fs_chdir, fs_stat,
+//                       fs_rename
 //    6   windows        ui_*, canvas_*
 //    7   time           sleep_ms, sleep_s, uptime_ms, unix_time, utc_offset
 //    8   dump           dump
@@ -46,7 +47,7 @@
 //   15   crypto         sha256, sha512, hmac_sha256, aes_gcm_* (crypto.h)
 //   16   sound          snd, beep, play, play_file, snd_stop, snd_busy
 //   17   descriptors    fd_open, fd_read, fd_write, fd_close, fd_seek, fd_dup,
-//                       fd_dup2, fd_pipe, fd_isatty
+//                       fd_dup2, fd_pipe, fd_isatty, fd_stat
 //   18   GPU            kgl_* and gl* (gl.h)
 //
 // Each program runs in user mode in its own address space: it sees only
@@ -214,7 +215,7 @@ void write_byte(const uint8_t* byte);
 void write_bytes(const uint8_t* bytes, size_t len);
 
 // Writes a NUL-terminated string.
-void write(const char* str);
+void write_str(const char* str);
 
 // Writes a NUL-terminated string and a newline.
 void writeln(const char* str);
@@ -321,6 +322,23 @@ typedef struct {
 // (free() it when done), or NULL on error.
 fs_entry_t* fs_list(const char* path, int* count);
 
+// What a file, folder or file descriptor is (fs_stat, fd_stat).
+enum { KOS_FILE = 1, KOS_FOLDER, KOS_CONSOLE, KOS_NULL, KOS_PIPE };
+typedef struct {
+    uint64_t size;   // a file's size; 0 for the rest
+    uint32_t kind;   // one of the KOS_* kinds above
+    uint32_t owner;  // a uid: for a descriptor, whoever opened it
+    uint32_t flags;  // 1: others may read; 2: others may write (0 from fd_stat)
+    uint32_t pad;
+} kos_stat_t;
+
+// Fills *st for path. Returns 0 or -1.
+long fs_stat(const char* path, kos_stat_t* st);
+
+// Moves or renames `from` to `to`, replacing a file (or empty folder, for a
+// folder) already there. Returns 0 or -1.
+long fs_rename(const char* from, const char* to);
+
 // ---- file descriptors ----------------------------------------------------------
 // Numbered handles on files, pipes and the console, like Unix's. 0, 1 and
 // 2 are stdin, stdout and stderr; a program gets them from whoever started
@@ -376,6 +394,10 @@ long fd_pipe(int fds[2]);
 
 // 1 if fd is the console, else 0.
 int fd_isatty(long fd);
+
+// Fills *st for an open descriptor; a file's size is what it is now,
+// with this program's unsaved writes. Returns 0 or -1.
+long fd_stat(long fd, kos_stat_t* st);
 
 // Reads everything from fd until the end of its input (e.g. stdin, when
 // it's a pipe), with a NUL after it. Returns it (free() it when done) and

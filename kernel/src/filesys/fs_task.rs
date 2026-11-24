@@ -1,5 +1,5 @@
 use crate::filesys::backend::FsBackend;
-use crate::filesys::backend::FsError;
+use crate::filesys::backend::{DirEntryInfo, FsError};
 use crate::filesys::perms::{self, Attrs, Perms, PERMS_FILE};
 use crate::filesys::fs_ipc::{FsRequest, FsResponse, FS_REQUEST_QUEUE, FS_REQUEST_WAIT, FS_RESPONSE_QUEUE, FS_RESPONSE_WAIT};
 use crate::drivers::virtio::blk::BlkDevice;
@@ -92,6 +92,8 @@ fn describe(req: &FsRequest) -> alloc::string::String {
         FsRequest::Chown { cwd, path, uid } => format!("chown {} {} (in {})", uid, path, cwd),
         FsRequest::Attrs { cwd, path } => format!("attrs {} (in {})", path, cwd),
         FsRequest::MayWrite { cwd, path } => format!("may write {} (in {})", path, cwd),
+        FsRequest::Stat { cwd, path } => format!("stat {} (in {})", path, cwd),
+        FsRequest::Rename { cwd, path, to } => format!("rename {} to {} (in {})", path, to, cwd),
     }
 }
 
@@ -115,14 +117,21 @@ fn save_perms(fs: &mut ActiveFs, perms: &mut Perms) {
     }
 }
 
-/// Whether `path` (normalized) is there: its folder lists it.
-fn exists(fs: &mut ActiveFs, path: &str) -> bool {
+/// What `path` (normalized) is, from its folder's listing.
+fn lookup(fs: &mut ActiveFs, path: &str) -> Result<DirEntryInfo, FsError> {
     if path == "/" {
-        return true;
+        return Ok(DirEntryInfo { name: String::from("/"), is_dir: true, size: 0 });
     }
     let name = &path[path.rfind('/').map_or(0, |i| i + 1)..];
-    fs.list_dir("/", perms::parent(path))
-        .is_ok_and(|entries| entries.iter().any(|e| e.name.eq_ignore_ascii_case(name)))
+    fs.list_dir("/", perms::parent(path))?
+        .into_iter()
+        .find(|e| e.name.eq_ignore_ascii_case(name))
+        .ok_or(FsError::NotFound)
+}
+
+/// Whether `path` (normalized) is there.
+fn exists(fs: &mut ActiveFs, path: &str) -> bool {
+    lookup(fs, path).is_ok()
 }
 
 fn status(result: Result<(), FsError>) -> FsResponse {
@@ -139,7 +148,8 @@ fn handle(fs: &mut ActiveFs, perms: &mut Perms, uid: Uid, req: FsRequest) -> FsR
         FsRequest::List { cwd, path } | FsRequest::ChangeDir { cwd, path } | FsRequest::Read { cwd, path }
         | FsRequest::Write { cwd, path, .. } | FsRequest::Mkdir { cwd, path } | FsRequest::Create { cwd, path }
         | FsRequest::Remove { cwd, path } | FsRequest::Chmod { cwd, path, .. } | FsRequest::Chown { cwd, path, .. }
-        | FsRequest::Attrs { cwd, path } | FsRequest::MayWrite { cwd, path } => (cwd, path),
+        | FsRequest::Attrs { cwd, path } | FsRequest::MayWrite { cwd, path } | FsRequest::Stat { cwd, path }
+        | FsRequest::Rename { cwd, path, .. } => (cwd, path),
     };
     let target = perms::normalize(cwd, path);
     let allowed = match &req {
@@ -148,7 +158,10 @@ fn handle(fs: &mut ActiveFs, perms: &mut Perms, uid: Uid, req: FsRequest) -> FsR
         FsRequest::Remove { .. } => perms.may_remove(uid, &target),
         FsRequest::Chmod { .. } => perms.may_chmod(uid, &target),
         FsRequest::Chown { .. } => uid == ROOT,
-        FsRequest::Attrs { .. } => perms.may_read(uid, perms::parent(&target)),
+        FsRequest::Attrs { .. } | FsRequest::Stat { .. } => perms.may_read(uid, perms::parent(&target)),
+        // Taking it out of one folder and putting it in another (over
+        // whatever is there).
+        FsRequest::Rename { cwd, to, .. } => perms.may_remove(uid, &target) && perms.may_remove(uid, &perms::normalize(cwd, to)),
     };
     if !allowed {
         return FsResponse::Err(FsError::PermissionDenied);
@@ -228,5 +241,44 @@ fn handle_allowed(fs: &mut ActiveFs, perms: &mut Perms, req: FsRequest, target: 
             false => FsResponse::Err(FsError::NotFound),
         },
         FsRequest::MayWrite { .. } => FsResponse::Ok,
+        FsRequest::Stat { .. } => match lookup(fs, target) {
+            Ok(entry) => FsResponse::Stat(entry, perms.attrs(target)),
+            Err(e) => FsResponse::Err(e),
+        },
+        FsRequest::Rename { cwd, path, to } => status(rename(fs, perms, &cwd, &path, &to, target)),
     }
+}
+
+/// rename(): `target` is `path` normalized.
+fn rename(fs: &mut ActiveFs, perms: &mut Perms, cwd: &str, path: &str, to: &str, target: &str) -> Result<(), FsError> {
+    let dest = perms::normalize(cwd, to);
+    let source = lookup(fs, target)?;
+    if target == "/" || dest == "/" || (dest.starts_with(target) && dest.as_bytes().get(target.len()) == Some(&b'/')) {
+        // The root, or a folder into itself.
+        return Err(FsError::InvalidPath);
+    }
+    if dest == target {
+        // The same name, maybe in another case (FAT ignores case): by way
+        // of a name nothing has, so the new spelling sticks.
+        let temp = alloc::format!("{}/.kos-rename-{}", perms::parent(target), crate::arch::timer::uptime_ms());
+        fs.rename(cwd, path, &temp)?;
+        return fs.rename(cwd, &temp, to);
+    }
+    if let Ok(existing) = lookup(fs, &dest) {
+        match (source.is_dir, existing.is_dir) {
+            (true, false) => return Err(FsError::NotADirectory),
+            (false, true) => return Err(FsError::NotAFile),
+            (true, true) if !fs.list_dir("/", &dest)?.is_empty() => return Err(FsError::NotEmpty),
+            _ => {}
+        }
+        fs.remove("/", &dest)?;
+        if perms.removed(&dest) {
+            save_perms(fs, perms);
+        }
+    }
+    fs.rename(cwd, path, to)?;
+    if perms.renamed(target, &dest) {
+        save_perms(fs, perms);
+    }
+    Ok(())
 }

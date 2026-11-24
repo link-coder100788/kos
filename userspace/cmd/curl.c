@@ -56,7 +56,7 @@ static int parse_args(int argc, char** argv, curl_args_t* args) {
             args->verbose = true;
         } else if (strcmp(arg, "-X") == 0 || strcmp(arg, "-d") == 0 || strcmp(arg, "-H") == 0 || strcmp(arg, "-o") == 0) {
             if (++i >= argc) {
-                write("curl: missing value for ");
+                write_str("curl: missing value for ");
                 writeln(arg);
                 return -1;
             }
@@ -74,7 +74,7 @@ static int parse_args(int argc, char** argv, curl_args_t* args) {
                 args->headers[args->header_count++] = argv[i];
             }
         } else if (arg[0] == '-') {
-            write("curl: unknown option: ");
+            write_str("curl: unknown option: ");
             writeln(arg);
             return -1;
         } else if (!args->url) {
@@ -118,7 +118,7 @@ static char* build_headers(const curl_args_t* args) {
 }
 
 static void print_response_headers(const http_response_t* response) {
-    write("HTTP status: ");
+    write_str("HTTP status: ");
     char digits[4];
     int status = response->status;
     int n = 0;
@@ -134,13 +134,13 @@ static void print_response_headers(const http_response_t* response) {
     digits[n] = '\0';
     writeln(digits);
     if (response->headers && response->headers[0]) {
-        write(response->headers);
+        write_str(response->headers);
         size_t len = strlen(response->headers);
         if (len && response->headers[len - 1] != '\n') {
-            write("\n");
+            write_str("\n");
         }
     }
-    write("\n");
+    write_str("\n");
 }
 
 static int run_curl(const curl_args_t* args) {
@@ -156,12 +156,12 @@ static int run_curl(const curl_args_t* args) {
         method = args->data ? "POST" : "GET";
     }
     if (args->verbose) {
-        write("> ");
-        write(method);
-        write(" ");
+        write_str("> ");
+        write_str(method);
+        write_str(" ");
         writeln(args->url);
         for (int i = 0; i < args->header_count; i++) {
-            write("> ");
+            write_str("> ");
             writeln(args->headers[i]);
         }
         writeln(">");
@@ -177,13 +177,13 @@ static int run_curl(const curl_args_t* args) {
     free(headers);
     if (!response) {
         if (!args->silent) {
-            write("curl: request failed: ");
+            write_str("curl: request failed: ");
             writeln(last_error());
         }
         return 1;
     }
     if (args->verbose) {
-        write("< status ");
+        write_str("< status ");
         print_response_headers(response);
     }
     if (args->include_headers || args->head) {
@@ -193,7 +193,7 @@ static int run_curl(const curl_args_t* args) {
         if (args->output_file) {
             if (fs_write(args->output_file, response->body, response->body_len) < 0) {
                 if (!args->silent) {
-                    write("curl: could not write file: ");
+                    write_str("curl: could not write file: ");
                     writeln(last_error());
                 }
                 http_free(response);

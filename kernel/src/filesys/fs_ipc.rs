@@ -43,6 +43,11 @@ pub enum FsRequest {
     Attrs { cwd: String, path: String },
     /// Ok if the caller may write it (or create it), else PermissionDenied.
     MayWrite { cwd: String, path: String },
+    /// What it is (file or folder, size) and its owner and flags.
+    Stat { cwd: String, path: String },
+    /// Moves or renames `path` to `to`, replacing a file (or empty
+    /// folder) already there, as POSIX's rename does.
+    Rename { cwd: String, path: String, to: String },
 }
 
 pub enum FsResponse {
@@ -51,6 +56,7 @@ pub enum FsResponse {
     /// New absolute cwd path, for ChangeDir.
     Path(String),
     Attrs(Attrs),
+    Stat(DirEntryInfo, Attrs),
     Ok,
     Err(FsError),
 }

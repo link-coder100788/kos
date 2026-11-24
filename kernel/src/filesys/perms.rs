@@ -201,6 +201,26 @@ impl Perms {
 
     /// `path` was removed: drops its entry and every entry inside it.
     /// Returns whether anything changed.
+    /// `from` (normalized) was moved to `to`: its entries, and those of
+    /// anything in it, move too, and it keeps the owner and flags it had
+    /// rather than taking its new folder's. Returns whether anything
+    /// changed.
+    pub fn renamed(&mut self, from: &str, to: &str) -> bool {
+        let attrs = self.attrs(from);
+        let mut changed = false;
+        for (p, _) in self.entries.iter_mut() {
+            if p == from || (p.starts_with(from) && p.as_bytes().get(from.len()) == Some(&b'/')) {
+                *p = alloc::format!("{}{}", to, &p[from.len()..]);
+                changed = true;
+            }
+        }
+        if self.attrs(to) != attrs {
+            self.set(to, attrs);
+            changed = true;
+        }
+        changed
+    }
+
     pub fn removed(&mut self, path: &str) -> bool {
         let before = self.entries.len();
         self.entries.retain(|(p, _)| {
@@ -300,8 +320,21 @@ pub mod tests {
         assert_eq!(again.attrs("/home/bob"), Attrs { owner: BOB, read: true, write: false });
     }
 
+    fn test_renaming_moves_entries_and_keeps_attrs() {
+        let mut p = sample();
+        p.set("/home/alice/notes/x.txt", Attrs { owner: ALICE, read: true, write: false });
+        // Out of alice's private folder into /tmp: still hers and private.
+        assert!(p.renamed("/home/alice/notes", "/tmp/notes"));
+        assert_eq!(p.attrs("/tmp/notes"), Attrs { owner: ALICE, read: false, write: false });
+        assert_eq!(p.attrs("/tmp/notes/x.txt"), Attrs { owner: ALICE, read: true, write: false });
+        assert!(!p.has_entry("/home/alice/notes/x.txt"));
+        // Within a folder, nothing to change.
+        assert!(!p.renamed("/home/bob/a", "/home/bob/b"));
+    }
+
     pub fn run() {
         crate::test::run_all(&[
+            &test_renaming_moves_entries_and_keeps_attrs,
             &test_normalize_resolves_dots_and_case,
             &test_prefixes_walk_down_from_the_root,
             &test_attrs_are_inherited,

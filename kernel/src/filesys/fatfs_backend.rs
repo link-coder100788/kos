@@ -228,4 +228,16 @@ impl FsBackend for FatFsBackend {
         self.fs.root_dir().remove(&rel).map_err(|_| FsError::NotFound)?;
         Ok(())
     }
+
+    fn rename(&mut self, cwd: &str, from: &str, to: &str) -> Result<(), FsError> {
+        let (from, to) = (Self::root_relative(cwd, from), Self::root_relative(cwd, to));
+        let root = self.fs.root_dir();
+        root.rename(&from, &root, &to).map_err(|e| match e {
+            fatfs::Error::NotFound => FsError::NotFound,
+            fatfs::Error::AlreadyExists => FsError::AlreadyExists,
+            fatfs::Error::NotEnoughSpace => FsError::NoSpace,
+            fatfs::Error::InvalidInput | fatfs::Error::InvalidFileNameLength | fatfs::Error::UnsupportedFileNameCharacter => FsError::InvalidPath,
+            _ => FsError::Io,
+        })
+    }
 }

@@ -210,16 +210,39 @@ char* strtok(char* s, const char* delim) {
 char* strerror(int e) {
     switch (e) {
         case 0: return "no error";
+        case EPERM: return "operation not permitted";
         case ENOENT: return "no such file or directory";
+        case ESRCH: return "no such process";
+        case EINTR: return "interrupted";
         case EIO: return "input/output error";
+        case E2BIG: return "argument list too long";
+        case ENOEXEC: return "not a program";
         case EBADF: return "bad file descriptor";
+        case ECHILD: return "no child processes";
+        case EAGAIN: return "resource temporarily unavailable";
         case ENOMEM: return "out of memory";
         case EACCES: return "permission denied";
+        case EFAULT: return "bad address";
+        case EBUSY: return "busy";
         case EEXIST: return "file exists";
+        case EXDEV: return "cross-device link";
+        case ENOTDIR: return "not a directory";
+        case EISDIR: return "is a directory";
         case EINVAL: return "invalid argument";
         case EMFILE: return "too many open files";
+        case ENOTTY: return "not a terminal";
+        case ENOSPC: return "no space left on device";
+        case ESPIPE: return "illegal seek";
+        case EROFS: return "read-only file system";
+        case EPIPE: return "broken pipe";
+        case EDOM: return "argument out of domain";
         case ERANGE: return "result out of range";
+        case ENAMETOOLONG: return "file name too long";
         case ENOSYS: return "not supported on KOS";
+        case ENOTEMPTY: return "directory not empty";
+        case ENOTSUP: return "not supported";
+        case ETIMEDOUT: return "timed out";
+        case ECONNREFUSED: return "connection refused";
         default: return "unknown error";
     }
 }

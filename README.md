@@ -278,7 +278,7 @@ void _start(void) {
 }
 ```
 
-Programs are freestanding: they start at `_start`, must call `exit(status)` (0 for success; returning from `_start` is `exit(0)`), and use KOS's own C library in `userspace/libc` (on the include path, so `#include "stdio.h"` works). Each header documents its part:
+Programs are freestanding and use KOS's own C library in `userspace/libc` (on the include path, so `#include "stdio.h"` works). clang builds it into the programs here, and `tcc` builds the same library for the programs it compiles on KOS. A program starts at `int main(int argc, char** argv)`, as anywhere else, or at its own `void _start(void)`, which must call `exit(status)` (0 for success; returning from `_start` is `exit(0)`); `crt1.c`'s `_start`, which calls `main`, is only used when a program has none of its own. Each header documents its part:
 
 | Header | What's in it |
 |---|---|
@@ -293,6 +293,7 @@ Programs are freestanding: they start at `_start`, must call `exit(status)` (0 f
 | `canvas.h` | Windows you draw pixels into, for graphics and games |
 | `render3d.h` | A software 3D renderer for canvases: a camera, shapes, terrain, lighting and fog, with a depth buffer |
 | `gl.h` | OpenGL 1.x for canvases, drawn by the Mac's GPU, with GLSL and HLSL shaders (needs KOS's own QEMU) |
+| `unistd.h`, `fcntl.h`, `sys/stat.h`, `dirent.h`, `errno.h` | POSIX's file calls: `open`, `read`, `write`, `lseek`, `close`, `dup`, `dup2`, `pipe`, `fcntl`, `stat`, `fstat`, `access`, `mkdir`, `rmdir`, `unlink`, `rename`, `opendir`/`readdir`, `chdir`, `getcwd`, with Linux's `errno` values. `stdio.h` has `FILE` streams on top (`fopen`, `fread`, `fgets`, `fprintf`...). KOS keeps no file times yet, and has no execute bit: whatever can be read can be run |
 
 See `userspace/prog/ui_demo.c` for a program with a window.
 
@@ -302,7 +303,7 @@ Every program ends with an exit status (0-255): what it passed to `exit`, or 130
 
 A program has its own current folder, where its relative paths start: it begins in the folder of whoever started it (the shell's, or its parent's for `spawn`), and `fs_chdir` (`chdir`) changes it, for it and the programs it starts from then on. `cd` in ksh and in an ssh session does that, so a bare `ls` lists the right folder.
 
-A program has file descriptors, as on Unix (`kernel/src/fd.rs`): 0, 1 and 2 are its stdin, stdout and stderr, and `printf`, `write` and `readln` use them. Whoever starts a program picks them: the console for `run` and the Programs window, nothing for `bg`, and the parent's own for `spawn`. `spawn_io(path, args, fds)` gives it others, so a shell can feed one program's output to another through a pipe (`fd_pipe`), or send it to a file (`fd_open`). A pipe holds 64 KiB; reading an empty one waits, and gets the end of the input once every program that could write to it has ended. KOS's filesystem reads and writes whole files, so an open file is a copy in kernel memory, written back when its last descriptor is closed or its program ends.
+A program has file descriptors, as on Unix (`kernel/src/fd.rs`): 0, 1 and 2 are its stdin, stdout and stderr, and `printf`, `write_str` and `readln` use them. Whoever starts a program picks them: the console for `run` and the Programs window, nothing for `bg`, and the parent's own for `spawn`. `spawn_io(path, args, fds)` gives it others, so a shell can feed one program's output to another through a pipe (`fd_pipe`), or send it to a file (`fd_open`). A pipe holds 64 KiB; reading an empty one waits, and gets the end of the input once every program that could write to it has ended. KOS's filesystem reads and writes whole files, so an open file is a copy in kernel memory, written back when its last descriptor is closed or its program ends.
 
 #### Syscalls
 
@@ -312,7 +313,7 @@ Under the library, a program talks to the kernel with `svc #n`, where `n` picks 
 |---|---|---|---|
 | 0 | | status → never returns | `exit` |
 | 1 | | byte → (to stdout) | `write_byte` |
-| 2 | | data, len → (to stdout) | `write_bytes`, `write`, `printf` |
+| 2 | | data, len → (to stdout) | `write_bytes`, `write_str`, `printf` |
 | 3 | | buf, max → length of a line from stdin; -1 at the end of the input (the console gives 0 if not in the foreground) | `readln` |
 | 4 memory | 0 | size → pointer, or 0 | `alloc`, `malloc` |
 | | 1 | size, n → pointer (size × n) | `alloc_n` |
@@ -332,6 +333,8 @@ Under the library, a program talks to the kernel with `svc #n`, where `n` picks 
 | | 7 | path, len, uid → 0 (root) | `fs_chown` |
 | | 8 | path, len → owner uid \| others may read << 32 \| others may write << 33 | `fs_attrs` |
 | | 9 | path, len → 0; makes it the program's current folder | `fs_chdir`, `chdir` |
+| | 10 | path, len, `kos_stat_t*` → 0; its kind (file, folder), size, owner and flags | `fs_stat`, `stat` |
+| | 11 | path, len, to, len → 0; moves or renames it, replacing a file (or empty folder) at `to` | `fs_rename`, `rename` |
 | 6 windows | 0 | title, elements, count → window id | `ui_create_window` |
 | | 1 | id → | `ui_close_window` |
 | | 2 | → window id | `ui_test_window` |
@@ -395,6 +398,7 @@ Under the library, a program talks to the kernel with `svc #n`, where `n` picks 
 | | 6 | fd → a new fd for the same thing | `fd_dup` |
 | | 7 | `int fds[2]` → 0 (`fds[0]` reads what `fds[1]` writes) | `fd_pipe` |
 | | 8 | fd → 1 if it's the console, else 0 | `fd_isatty` |
+| | 9 | fd, `kos_stat_t*` → 0; its kind (file, console, nothing, pipe), size and who opened it | `fd_stat`, `fstat` |
 | 16 sound | 0 | hz → 0 (a steady tone until the next sound; 0 is silence) | `snd` |
 | | 1 | → 0, once the beep is over | `beep` |
 | | 2 | notes, len → 0 once the tune is over, or -1 for bad notes | `play` |

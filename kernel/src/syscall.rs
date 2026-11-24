@@ -245,8 +245,37 @@ mod filesystem {
     pub const FS_CHOWN: u64 = 7;  // (path, len, uid) -> 0; root only
     pub const FS_ATTRS: u64 = 8;  // (path, len) -> owner uid | others may read << 32 | others may write << 33
     pub const FS_CHDIR: u64 = 9;  // (path, len) -> 0; the calling program's current folder
+    pub const FS_STAT: u64 = 10;  // (path, len, *KosStat) -> 0
+    pub const FS_RENAME: u64 = 11; // (path, len, to, len) -> 0; replaces a file or empty folder at `to`
 
-    const_unique!(FS_WRITE, FS_READ, FS_LIST, FS_REMOVE, FS_MKDIR, FS_CWD, FS_CHMOD, FS_CHOWN, FS_ATTRS, FS_CHDIR);
+    const_unique!(FS_WRITE, FS_READ, FS_LIST, FS_REMOVE, FS_MKDIR, FS_CWD, FS_CHMOD, FS_CHOWN, FS_ATTRS, FS_CHDIR, FS_STAT, FS_RENAME);
+}
+
+/// What `stat` and `fstat` fill in: the libc's `struct kos_stat` (sys.h).
+#[repr(C)]
+pub struct KosStat {
+    pub size: u64,
+    /// One of the `STAT_*` kinds.
+    pub kind: u32,
+    pub owner: u32,
+    /// 1: others may read; 2: others may write.
+    pub flags: u32,
+    pub _pad: u32,
+}
+
+pub const STAT_FILE: u32 = 1;
+pub const STAT_FOLDER: u32 = 2;
+pub const STAT_CONSOLE: u32 = 3;
+pub const STAT_NULL: u32 = 4;
+pub const STAT_PIPE: u32 = 5;
+
+/// Writes `stat` to the program's `ptr`: 0, or a failure if it can't.
+fn put_stat(frame: &SyscallContext, ptr: u64, stat: KosStat) -> u64 {
+    if !frame.is_user() || !user_ok(frame, ptr, core::mem::size_of::<KosStat>(), 8) {
+        return fail("bad buffer");
+    }
+    unsafe { (ptr as *mut KosStat).write(stat) };
+    0
 }
 
 /// Files, with paths relative to the calling program's current folder.
@@ -320,6 +349,23 @@ pub fn syscall_filesystem(frame: &mut SyscallContext) {
             },
             e => failed("fs_chdir", e),
         },
+        filesystem::FS_STAT => match fs_call(FsRequest::Stat { cwd, path: path.clone() }) {
+            FsResponse::Stat(entry, attrs) => put_stat(frame, frame[2], KosStat {
+                size: entry.size as u64,
+                kind: if entry.is_dir { STAT_FOLDER } else { STAT_FILE },
+                owner: attrs.owner,
+                flags: attrs.read as u32 | (attrs.write as u32) << 1,
+                _pad: 0,
+            }),
+            e => failed("fs_stat", e),
+        },
+        filesystem::FS_RENAME => {
+            let Some(to) = user_str(frame, frame[2], frame[3]) else { frame[0] = fail("bad path"); return };
+            match fs_call(FsRequest::Rename { cwd, path: path.clone(), to: to.to_string() }) {
+                FsResponse::Ok => 0,
+                e => failed("fs_rename", e),
+            }
+        }
         _ => { log::warn!("filesystem syscall: unknown sub-command {}", syscall_num); u64::MAX }
     };
 }
@@ -338,8 +384,9 @@ mod fds {
     pub const DUP: u64 = 6;    // (fd) -> a new fd for the same thing
     pub const PIPE: u64 = 7;   // (int[2]) -> 0; [0] reads what [1] writes
     pub const ISATTY: u64 = 8; // (fd) -> 1 if it's the console, else 0
+    pub const FSTAT: u64 = 9;  // (fd, *KosStat) -> 0
 
-    const_unique!(OPEN, READ, WRITE, CLOSE, SEEK, DUP2, DUP, PIPE, ISATTY);
+    const_unique!(OPEN, READ, WRITE, CLOSE, SEEK, DUP2, DUP, PIPE, ISATTY, FSTAT);
 }
 
 /// File descriptors (see `fd`): files, pipes and the console. Only
@@ -399,6 +446,10 @@ pub fn syscall_fd(frame: &mut SyscallContext) {
             }
         }
         fds::ISATTY => Ok(fd_get(frame[0]).is_some_and(|f| f.is_console()) as u64),
+        fds::FSTAT => get(frame[0]).map(|f| {
+            let (kind, size, owner) = f.stat();
+            put_stat(frame, frame[1], KosStat { size, kind, owner, flags: 0, _pad: 0 })
+        }),
         _ => Err(format!("unknown file descriptor call {}", syscall_num)),
     };
     frame[0] = result.unwrap_or_else(|e| fail(&e));

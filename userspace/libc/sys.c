@@ -14,15 +14,15 @@ void write_bytes(const uint8_t* bytes, size_t len) {
     KOS_SVC(0x2, 0, bytes, len, 0, 0, 0);
 }
 
-void write(const char* str) {
+void write_str(const char* str) {
     size_t len = 0;
     while (str[len] != '\0') len++;
     write_bytes((const uint8_t*)str, len);
 }
 
 void writeln(const char* str) {
-    write(str);
-    write("\n");
+    write_str(str);
+    write_str("\n");
 }
 
 void yield(void) {
@@ -252,6 +252,10 @@ int fd_isatty(long fd) {
     return (int)SVC(0x11, 8, fd, 0, 0, 0);
 }
 
+long fd_stat(long fd, kos_stat_t* st) {
+    return (long)SVC(0x11, 9, fd, st, 0, 0);
+}
+
 char* fd_read_all(long fd, size_t* len) {
     size_t size = 0, cap = 4096;
     char* data = alloc(cap + 1);
@@ -399,6 +403,14 @@ long fs_chown(const char* path, long uid) {
 
 long fs_chdir(const char* path) {
     return (long)SVC(0x5, 9, path, c_strlen(path), 0, 0);
+}
+
+long fs_stat(const char* path, kos_stat_t* st) {
+    return (long)SVC(0x5, 10, path, c_strlen(path), st, 0);
+}
+
+long fs_rename(const char* from, const char* to) {
+    return (long)SVC(0x5, 11, from, c_strlen(from), to, c_strlen(to));
 }
 
 long fs_cwd(char* buf, size_t max_len) {

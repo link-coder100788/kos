@@ -544,20 +544,25 @@ fn test_programs_have_their_own_folder() {
     remove_tree("/permtest");
 }
 
-/// /bin/tcc (from `make disk`) compiles a C program on KOS, and what it
-/// makes runs. A detached program's output goes nowhere, so the program
-/// writes its answer to a file. A program that doesn't compile gives no
-/// output file, and tcc fails.
+const TCC: &str = "/bin/tcc.elf.b64";
+
+/// Compiles C `source` into `program` with /bin/tcc (from `make disk`),
+/// by way of `source_path`. Returns tcc's status and what it printed.
+fn tcc_compile(source_path: &str, source: &str, program: &str) -> (i32, String) {
+    assert!(read_file(TCC).is_some(), "no {} on the disk: run `make disk`", TCC);
+    remove_file(program);
+    write_file(source_path, source);
+    run_program(TCC, &alloc::format!("-o {} {}", program, source_path), 30_000)
+}
+
+/// /bin/tcc compiles a C program on KOS, and what it makes runs. A
+/// program that doesn't compile gives no output file, and tcc fails.
 fn test_tcc_compiles_and_runs_a_program() {
-    const TCC: &str = "/bin/tcc.elf.b64";
     const SOURCE: &str = "/tcc-test.c";
     const PROGRAM: &str = "/tcc-test.elf";
     const RESULT: &str = "/tcc-test.txt";
-    assert!(read_file(TCC).is_some(), "no {} on the disk: run `make disk`", TCC);
-    for path in [SOURCE, PROGRAM, RESULT] {
-        remove_file(path);
-    }
-    write_file(SOURCE, r#"
+    remove_file(RESULT);
+    let (status, printed) = tcc_compile(SOURCE, r#"
 #include <stdio.h>
 #include <string.h>
 
@@ -569,8 +574,7 @@ int main(int argc, char** argv) {
     fclose(f);
     return 0;
 }
-"#);
-    let (status, printed) = run_program(TCC, &alloc::format!("-o {} {}", PROGRAM, SOURCE), 30_000);
+"#, PROGRAM);
     assert_eq!(status, 0, "tcc failed: {}", printed);
     assert!(read_file(PROGRAM).is_some(), "tcc made no program");
     let (status, printed) = run_program(PROGRAM, "hello abc", 5_000);
@@ -578,15 +582,113 @@ int main(int argc, char** argv) {
     let result = read_file(RESULT).map(|d| String::from_utf8_lossy(&d).into_owned());
     assert_eq!(result.as_deref(), Some("64 hello 3"));
 
-    write_file(SOURCE, "int main(void) { return nothing_called_this; }\n");
-    remove_file(PROGRAM);
-    let (status, printed) = run_program(TCC, &alloc::format!("-o {} {}", PROGRAM, SOURCE), 30_000);
+    let (status, printed) = tcc_compile(SOURCE, "int main(void) { return nothing_called_this; }\n", PROGRAM);
     assert_ne!(status, 0, "tcc succeeded on code with an error");
     assert!(printed.contains("nothing_called_this"), "tcc didn't say what was wrong: {}", printed);
     assert!(read_file(PROGRAM).is_none(), "tcc made a program from code with an error");
     for path in [SOURCE, PROGRAM, RESULT] {
         remove_file(path);
     }
+}
+
+/// POSIX's file calls, from a program tcc compiles on KOS: open, write,
+/// lseek, fstat, fcntl's F_DUPFD, stat, access, mkdir, rename (into a
+/// folder, over a file, changing only case, and of a folder), opendir and
+/// readdir, rmdir and unlink with their errno values, and getcwd.
+fn test_posix_file_calls() {
+    const SOURCE: &str = "/posix-test.c";
+    const PROGRAM: &str = "/posix-test.elf";
+    remove_tree("/posixtest");
+    let (status, printed) = tcc_compile(SOURCE, r#"
+#include <stdio.h>
+#include <string.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <dirent.h>
+#include <sys/stat.h>
+
+static int failures;
+#define CHECK(c) do { if (!(c)) { printf("line %d: %s (errno %d)\n", __LINE__, #c, errno); failures++; } } while (0)
+
+int main(void) {
+    struct stat st;
+    char buf[32] = { 0 };
+    CHECK(mkdir("/posixtest", 0755) == 0);
+    CHECK(mkdir("/posixtest", 0755) == -1 && errno == EEXIST);
+    CHECK(chdir("/posixtest") == 0);
+    CHECK(getcwd(buf, sizeof buf) && strcmp(buf, "/posixtest") == 0);
+
+    int fd = open("a.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    CHECK(fd >= 3);
+    CHECK(write(fd, "hello world", 11) == 11);
+    CHECK(fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size == 11);
+    CHECK(lseek(fd, 6, SEEK_SET) == 6);
+    CHECK(write(fd, "WORLD", 5) == 5);
+    CHECK(fcntl(fd, F_DUPFD, 10) == 10);
+    CHECK(close(fd) == 0 && close(10) == 0);
+    CHECK(close(10) == -1 && errno == EBADF);
+
+    CHECK(stat("a.txt", &st) == 0 && S_ISREG(st.st_mode) && st.st_size == 11);
+    CHECK(stat(".", &st) == 0 && S_ISDIR(st.st_mode));
+    CHECK(stat("nope", &st) == -1 && errno == ENOENT);
+    CHECK(access("a.txt", R_OK | W_OK) == 0);
+    CHECK(access("nope", F_OK) == -1 && errno == ENOENT);
+
+    CHECK(mkdir("sub", 0755) == 0);
+    CHECK(rename("a.txt", "sub/b.txt") == 0);
+    CHECK(stat("a.txt", &st) == -1 && errno == ENOENT);
+    fd = open("sub/b.txt", O_RDONLY);
+    CHECK(read(fd, buf, sizeof buf - 1) == 11 && strcmp(buf, "hello WORLD") == 0);
+    close(fd);
+    fd = open("c.txt", O_WRONLY | O_CREAT, 0644);
+    write(fd, "x", 1);
+    close(fd);
+    CHECK(rename("c.txt", "sub/b.txt") == 0);
+    CHECK(stat("sub/b.txt", &st) == 0 && st.st_size == 1);
+    CHECK(rename("sub/b.txt", "sub/B.txt") == 0);
+
+    DIR* d = opendir("sub");
+    CHECK(d != NULL);
+    int n = 0;
+    struct dirent* e;
+    while (d && (e = readdir(d))) {
+        n++;
+        CHECK(strcmp(e->d_name, "B.txt") == 0 && e->d_type == DT_REG);
+    }
+    CHECK(n == 1);
+    if (d) closedir(d);
+    CHECK(opendir("sub/B.txt") == NULL && errno == ENOTDIR);
+    CHECK(opendir("nope") == NULL && errno == ENOENT);
+
+    CHECK(rmdir("sub") == -1 && errno == ENOTEMPTY);
+    CHECK(unlink("sub") == -1 && errno == EISDIR);
+    CHECK(rmdir("sub/B.txt") == -1 && errno == ENOTDIR);
+    CHECK(rename("sub", "sub/inside") == -1 && errno == EINVAL);
+    CHECK(unlink("sub/B.txt") == 0);
+    CHECK(rename("sub", "moved") == 0);
+    CHECK(stat("moved", &st) == 0 && S_ISDIR(st.st_mode));
+    CHECK(rmdir("moved") == 0);
+
+    CHECK(isatty(1) == 0);
+    CHECK(fstat(1, &st) == 0 && S_ISFIFO(st.st_mode));
+    CHECK(chdir("/") == 0 && rmdir("/posixtest") == 0);
+    printf("%d failed\n", failures);
+    return failures != 0;
+}
+"#, PROGRAM);
+    assert_eq!(status, 0, "tcc failed: {}", printed);
+    let (status, printed) = run_program(PROGRAM, "", 10_000);
+    assert_eq!((status, printed.as_str()), (0, "0 failed\n"));
+    remove_file(SOURCE);
+    remove_file(PROGRAM);
+}
+
+/// A program clang built that starts at main() (/bin/echo) gets its
+/// arguments and exits with what main returns.
+fn test_programs_can_start_at_main() {
+    let (status, printed) = run_program("/bin/echo.elf.b64", "hello from main", 5_000);
+    assert_eq!((status, printed.as_str()), (0, "hello from main\n"));
 }
 
 pub fn run() {
@@ -623,5 +725,7 @@ pub fn run() {
         &test_stdout_goes_into_a_pipe,
         &test_read_line_from_a_pipe,
         &test_tcc_compiles_and_runs_a_program,
+        &test_posix_file_calls,
+        &test_programs_can_start_at_main,
     ]);
 }

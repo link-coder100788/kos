@@ -6,7 +6,10 @@
 
 #include <stddef.h>
 
+#ifndef C_TIME_T
+#define C_TIME_T
 typedef long time_t;
+#endif
 
 struct tm {
     int tm_sec;    // 0-59

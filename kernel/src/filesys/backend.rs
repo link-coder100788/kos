@@ -47,6 +47,7 @@ impl core::fmt::Display for FsError {
     }
 }
 
+#[derive(Clone)]
 pub struct DirEntryInfo {
     pub name: String,
     pub is_dir: bool,
@@ -66,6 +67,14 @@ pub trait FsBackend {
     fn mkdir(&mut self, cwd: &str, path: &str) -> Result<(), FsError>;
     fn create_file(&mut self, cwd: &str, path: &str) -> Result<(), FsError>;
     fn remove(&mut self, cwd: &str, path: &str) -> Result<(), FsError>;
+    /// Moves or renames `from` to `to`, which isn't there (fs_task
+    /// removes one that is first). By default, for a file only: copies it
+    /// and removes the original.
+    fn rename(&mut self, cwd: &str, from: &str, to: &str) -> Result<(), FsError> {
+        let data = self.read_file(cwd, from)?;
+        self.write_file(cwd, to, &data)?;
+        self.remove(cwd, from)
+    }
 }
 
 /// Joins a cwd (absolute path) with a possibly-relative path argument.

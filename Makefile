@@ -216,8 +216,9 @@ USER_CC     := clang -target aarch64-none-elf -fuse-ld=lld -nostdlib \
 # the disk are stripped of it.
 USER_CFLAGS := -ffreestanding -Wall -g -I userspace/libc
 # The C library: every .c, .S and .h in userspace/libc and its subfolders,
-# except crt/ (the start files /bin/tcc links; these programs have _start).
-LIBC_SRC    := $(filter-out userspace/libc/crt/%,$(wildcard userspace/libc/*.c userspace/libc/*/*.c userspace/libc/*.S))
+# except crti/crtn (empty start files only /bin/tcc links). crt1.c is in:
+# its weak _start calls main() for a program that has no _start of its own.
+LIBC_SRC    := $(filter-out userspace/libc/crt/crti.c userspace/libc/crt/crtn.c,$(wildcard userspace/libc/*.c userspace/libc/*/*.c userspace/libc/*.S))
 LIBC_H      := $(wildcard userspace/libc/*.h userspace/libc/*/*.h)
 USER_OUT    := $(BUILD)/user
 # Every .c / .s file in userspace/prog is a program. C programs link the libc.

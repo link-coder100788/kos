@@ -78,7 +78,10 @@ int feof(FILE* f);
 int ferror(FILE* f);
 int fileno(FILE* f);
 
-// Deletes a file.
+// Deletes a file, or an empty folder.
 int remove(const char* path);
+// Moves or renames `from` to `to`, replacing a file (or an empty folder,
+// for a folder) already there.
+int rename(const char* from, const char* to);
 
 #endif //C_STDIO_H

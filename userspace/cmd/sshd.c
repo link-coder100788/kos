@@ -82,7 +82,7 @@ static void log_line(const char* fmt, ...) {
     va_end(args);
     strcat(line, "\n");
     // Shown when started with `run`; `bg` throws it away.
-    write(line);
+    write_str(line);
     // The log is root's, whoever's logged in.
     long uid = getuid();
     set_uid(0);

@@ -494,7 +494,7 @@ static void check_host_key(const uint8_t* blob, size_t blob_len) {
     printf("The authenticity of host '%s' can't be established.\n", who);
     printf("ED25519 key fingerprint is SHA256:%s.\n", fingerprint);
     for (;;) {
-        write("Are you sure you want to continue connecting (yes/no)? ");
+        write_str("Are you sure you want to continue connecting (yes/no)? ");
         char answer[16];
         long n = readln(answer, sizeof answer - 1);
         answer[n < 0 ? 0 : n] = '\0';
@@ -632,7 +632,7 @@ static void print_text(const uint8_t* s, size_t len) {
 }
 
 static void read_secret(const char* prompt, char* out, size_t max) {
-    write(prompt);
+    write_str(prompt);
     long n = readln(out, max - 1);
     out[n < 0 ? 0 : n] = '\0';
 }
