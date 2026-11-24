@@ -269,3 +269,70 @@ double acos(double x) {
     if (x < -1 || x > 1) return NAN_VALUE;
     return atan2(sqrt((1 - x) * (1 + x)), x);
 }
+
+// ---- long double <-> double, for clang ------------------------------------------
+// A long double is 128 bits (1 sign, 15 exponent bits biased by 16383, 112
+// fraction bits), done in software: clang calls these to convert, and links
+// no helper library of its own here. tcc has them in libtcc1.a.
+
+#ifndef __TINYC__
+typedef union {
+    long double q;
+    struct { uint64_t lo, hi; } u;
+} quad_t;
+
+long double __extenddftf2(double x) {
+    bits_t b = { x };
+    uint64_t sign = b.u >> 63, exp = (b.u >> 52) & 0x7ff, frac = b.u & 0xfffffffffffffULL;
+    quad_t q = { 0 };
+    if (exp == 0x7ff) exp = 0x7fff;                 // infinity, NaN
+    else if (exp == 0 && frac == 0) exp = 0;        // zero
+    else {
+        if (exp == 0) {                             // subnormal: normalise it
+            exp = 1;
+            while (!(frac & (1ULL << 52))) { frac <<= 1; exp--; }
+            frac &= 0xfffffffffffffULL;
+        }
+        exp += 16383 - 1023;
+    }
+    // The 52 fraction bits become the top of the 112.
+    q.u.hi = sign << 63 | exp << 48 | frac >> 4;
+    q.u.lo = frac << 60;
+    return q.q;
+}
+
+double __trunctfdf2(long double x) {
+    quad_t q = { .q = x };
+    uint64_t sign = q.u.hi >> 63;
+    int64_t exp = (q.u.hi >> 48) & 0x7fff;
+    // The top 53 fraction bits (one more than a double keeps, to round on),
+    // and whether anything below them is set.
+    uint64_t frac = (q.u.hi & 0xffffffffffffULL) << 5 | q.u.lo >> 59;
+    int sticky = (q.u.lo & ((1ULL << 59) - 1)) != 0;
+    bits_t b;
+    if (exp == 0x7fff) {                 // infinity, or NaN (kept quiet)
+        b.u = sign << 63 | 0x7ffULL << 52 | (frac || sticky ? 1ULL << 51 | frac >> 1 : 0);
+        return b.d;
+    }
+    exp -= 16383 - 1023;
+    if (exp >= 0x7ff) { b.u = sign << 63 | 0x7ffULL << 52; return b.d; }   // too big: infinity
+    uint64_t mant = frac | 1ULL << 53;   // with the leading 1, 54 bits
+    if (exp <= 0) {                      // a subnormal double, or zero
+        int shift = 1 - (int)exp;
+        if (shift > 54) { mant = 0; sticky = 1; shift = 0; exp = 0; }
+        else {
+            sticky |= (mant & ((1ULL << shift) - 1)) != 0;
+            mant >>= shift;
+            exp = 0;
+        }
+    }
+    // Round to nearest, ties to even, on the extra bit.
+    uint64_t out = mant >> 1;
+    if ((mant & 1) && (sticky || (out & 1))) out++;
+    // A normal number's leading 1 (bit 52 of out) isn't stored: adding out
+    // with it to exponent - 1 does that, and rounding up carries into the
+    // exponent, as it should. A subnormal's out has no leading 1.
+    b.u = sign << 63 | (exp ? ((uint64_t)(exp - 1) << 52) + out : out);
+    return b.d;
+}
+#endif

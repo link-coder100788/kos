@@ -215,8 +215,9 @@ USER_CC     := clang -target aarch64-none-elf -fuse-ld=lld -nostdlib \
 # -g for lldb (`kos prog`): build/user keeps the debug info, the copies on
 # the disk are stripped of it.
 USER_CFLAGS := -ffreestanding -Wall -g -I userspace/libc
-# The C library: every .c and .h in userspace/libc and its subfolders.
-LIBC_SRC    := $(wildcard userspace/libc/*.c userspace/libc/*/*.c)
+# The C library: every .c, .S and .h in userspace/libc and its subfolders,
+# except crt/ (the start files /bin/tcc links; these programs have _start).
+LIBC_SRC    := $(filter-out userspace/libc/crt/%,$(wildcard userspace/libc/*.c userspace/libc/*/*.c userspace/libc/*.S))
 LIBC_H      := $(wildcard userspace/libc/*.h userspace/libc/*/*.h)
 USER_OUT    := $(BUILD)/user
 # Every .c / .s file in userspace/prog is a program. C programs link the libc.
@@ -235,7 +236,7 @@ CMD_B64     := $(patsubst $(CMD_OUT)/%,$(CMD_OUT)/disk/bin/%.b64,$(CMD_PROGS))
 user: $(USER_PROGS) $(USER_B64) $(CMD_PROGS) $(CMD_B64)
 
 $(USER_OUT)/%.elf: userspace/prog/%.c $(LIBC_SRC) $(LIBC_H) | $(USER_OUT)
-	$(USER_CC) $(USER_CFLAGS) -o $@ $(filter %.c,$^)
+	$(USER_CC) $(USER_CFLAGS) -o $@ $(filter %.c %.S,$^)
 
 $(USER_OUT)/%.elf: userspace/prog/%.s | $(USER_OUT)
 	$(USER_CC) -o $@ $<
@@ -246,7 +247,7 @@ $(USER_OUT)/disk/programs/%.elf.b64: $(USER_OUT)/%.elf | $(USER_OUT)/disk/progra
 	rm $@.tmp
 
 $(CMD_OUT)/%.elf: userspace/cmd/%.c $(LIBC_SRC) $(LIBC_H) | $(CMD_OUT)
-	$(USER_CC) $(USER_CFLAGS) -o $@ $(filter %.c,$^)
+	$(USER_CC) $(USER_CFLAGS) -o $@ $(filter %.c %.S,$^)
 
 $(CMD_OUT)/disk/bin/%.elf.b64: $(CMD_OUT)/%.elf | $(CMD_OUT)/disk/bin
 	rust-objcopy --strip-debug $< $@.tmp
@@ -260,7 +261,7 @@ $(CMD_OUT)/disk/bin/%.elf.b64: $(CMD_OUT)/%.elf | $(CMD_OUT)/disk/bin
 # archive format lld expects; macOS's ar writes another.
 
 LIBC_OUT  := $(BUILD)/libc
-LIBC_OBJS := $(patsubst userspace/libc/%.c,$(LIBC_OUT)/%.o,$(LIBC_SRC))
+LIBC_OBJS := $(patsubst userspace/libc/%,$(LIBC_OUT)/%.o,$(basename $(LIBC_SRC)))
 LIBC_A    := $(BUILD)/libc.a
 # USER_CC without its link flags, which -c would only warn about.
 LIBC_CC   := clang -target aarch64-none-elf -fPIE
@@ -270,6 +271,10 @@ libc: $(LIBC_A)
 $(LIBC_OUT)/%.o: userspace/libc/%.c $(LIBC_H)
 	@mkdir -p $(@D)
 	$(LIBC_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(LIBC_OUT)/%.o: userspace/libc/%.S
+	@mkdir -p $(@D)
+	$(LIBC_CC) -c $< -o $@
 
 $(LIBC_A): $(LIBC_OBJS)
 	rm -f $@
@@ -298,20 +303,18 @@ $(RUST_GAME_DEBUG): $(GAME_OUT)/debug/%.elf: $(LIBC_A) FORCE | $(GAME_OUT)/debug
 
 .SECONDEXPANSION:
 $(GAME_OUT)/debug/%.elf: $$(wildcard games/$$*/*.c games/$$*/*.s) $(LIBC_SRC) $(LIBC_H) | $(GAME_OUT)/debug
-	$(USER_CC) $(USER_CFLAGS) -o $@ $(filter %.c %.s,$^)
+	$(USER_CC) $(USER_CFLAGS) -o $@ $(filter %.c %.s %.S,$^)
 
 $(GAME_OUT)/disk/games/%.elf: $(GAME_OUT)/debug/%.elf | $(GAME_OUT)/disk/games
 	rust-objcopy --strip-debug $< $@
 
 # ---- tcc ----------------------------------------------------------------
 # TinyCC (vendored in tools/tinycc) compiles programs on KOS itself. They
-# link with userspace/tcclibc, a copy of the C library that tcc can build:
-# its syscall wrappers all call kos_syscall (syscall.S) instead of using
-# inline asm, which tcc can't compile, so tcc builds it into libc.a and
-# nothing it links was made by clang. libtcc1.a is tcc's own helpers
+# link with the same C library as everything else, userspace/libc, built by
+# tcc into its own libc.a so nothing it links was made by clang. libtcc1.a is tcc's own helpers
 # (128-bit long double, atomics...). Both archives are made by tcc's
 # archiver, `tcc -ar`, whose format tcc reads (macOS's ar writes another).
-# crt1.o, crti.o and crtn.o (tcclibc/crt) are the start files tcc links
+# crt1.o, crti.o and crtn.o (userspace/libc/crt) are the start files tcc links
 # into every program it builds on KOS.
 
 TCC_DIR   := tools/tinycc
@@ -319,10 +322,10 @@ TCC_DIR   := tools/tinycc
 TCC_X     := $(TCC_DIR)/arm64-tcc
 TCC_OUT   := $(BUILD)/tcc-libs
 # KOS's headers, then tcc's (stdarg.h, stddef.h...), none of this computer's.
-TCC_INC   := -nostdinc -I userspace/tcclibc -I $(TCC_DIR)/include
-TCC_LIBC_SRC := $(filter-out userspace/tcclibc/crt/%,$(wildcard userspace/tcclibc/*.c userspace/tcclibc/*/*.c userspace/tcclibc/*.S))
-TCC_LIBC_H   := $(wildcard userspace/tcclibc/*.h userspace/tcclibc/*/*.h)
-TCC_LIBC_OBJS := $(patsubst userspace/tcclibc/%,$(TCC_OUT)/obj/%.o,$(basename $(TCC_LIBC_SRC)))
+TCC_INC   := -nostdinc -I userspace/libc -I $(TCC_DIR)/include
+TCC_LIBC_SRC := $(filter-out userspace/libc/crt/%,$(wildcard userspace/libc/*.c userspace/libc/*/*.c userspace/libc/*.S))
+TCC_LIBC_H   := $(wildcard userspace/libc/*.h userspace/libc/*/*.h)
+TCC_LIBC_OBJS := $(patsubst userspace/libc/%,$(TCC_OUT)/obj/%.o,$(basename $(TCC_LIBC_SRC)))
 TCC_CRT    := $(TCC_OUT)/crt1.o $(TCC_OUT)/crti.o $(TCC_OUT)/crtn.o
 TCC_LIBS   := $(TCC_OUT)/libc.a $(TCC_OUT)/libtcc1.a
 
@@ -339,15 +342,15 @@ $(TCC_X): $(TCC_DIR)/config.mak FORCE
 	$(MAKE) -C $(TCC_DIR) cross-arm64
 $(TCC_DIR)/arm64-libtcc1.a: $(TCC_X) ;
 
-$(TCC_OUT)/obj/%.o: userspace/tcclibc/%.c $(TCC_LIBC_H) $(TCC_X)
+$(TCC_OUT)/obj/%.o: userspace/libc/%.c $(TCC_LIBC_H) $(TCC_X)
 	@mkdir -p $(@D)
 	$(TCC_X) $(TCC_INC) -Wall -c $< -o $@
 
-$(TCC_OUT)/obj/%.o: userspace/tcclibc/%.S $(TCC_X)
+$(TCC_OUT)/obj/%.o: userspace/libc/%.S $(TCC_X)
 	@mkdir -p $(@D)
 	$(TCC_X) -c $< -o $@
 
-$(TCC_OUT)/crt%.o: userspace/tcclibc/crt/crt%.c $(TCC_LIBC_H) $(TCC_X)
+$(TCC_OUT)/crt%.o: userspace/libc/crt/crt%.c $(TCC_LIBC_H) $(TCC_X)
 	@mkdir -p $(@D)
 	$(TCC_X) $(TCC_INC) -Wall -c $< -o $@
 
@@ -372,10 +375,10 @@ $(TCC_OUT)/prog/%.elf: userspace/tcc/%.c $(TCC_LIBC_H) $(TCC_LIBS)
 	@mkdir -p $(@D)
 	$(TCC_X) $(TCC_CFLAGS) -o $@ $< $(TCC_LIBS)
 
-# tcc itself, for KOS: built by the cross compiler against tcclibc, with
+# tcc itself, for KOS: built by the cross compiler against the libc, with
 # CONFIG_TCC_KOS for the "KOS patch" changes in tools/tinycc (no -run,
 # programs linked at USER_BASE and always static). On KOS it finds its own
-# headers and libraries in /.kos/lib/tcc ({B}) and tcclibc's headers in
+# headers and libraries in /.kos/lib/tcc ({B}) and the libc's headers in
 # /.kos/include.
 TCC_KOS_DEFS := -DONE_SOURCE=1 -DTCC_TARGET_ARM64=1 -DCONFIG_TCC_KOS -DCONFIG_TCC_STATIC \
 	-DCONFIG_TCC_BACKTRACE=0 -DCONFIG_TCC_BCHECK=0 -DCONFIG_TCC_SEMLOCK=0 \
@@ -391,7 +394,7 @@ $(TCC_KOS): $(wildcard $(TCC_DIR)/*.c $(TCC_DIR)/*.h) $(TCC_LIBC_H) $(TCC_LIBS) 
 		$(TCC_OUT)/crt1.o $(TCC_DIR)/tcc.c $(TCC_LIBS)
 
 # What goes on the disk for tcc, laid out as it is there: /bin/tcc
-# (base64, like every /bin command), tcclibc's headers in /.kos/include, and
+# (base64, like every /bin command), the libc's headers in /.kos/include, and
 # tcc's own headers, libraries and start files in /.kos/lib/tcc (/.kos is
 # where KOS keeps its system files). Made afresh each time, so a deleted
 # header doesn't linger.
@@ -401,7 +404,7 @@ tcc-disk: $(TCC_KOS) $(TCC_LIBS) $(TCC_CRT)
 	rm -rf $(TCC_DISK)
 	mkdir -p $(TCC_DISK)/bin $(TCC_DISK)/.kos/lib/tcc/include
 	base64 < $(TCC_KOS) | tr -d '\n' > $(TCC_DISK)/bin/tcc.elf.b64
-	rsync -a --prune-empty-dirs --include='*/' --include='*.h' --exclude='*' userspace/tcclibc/ $(TCC_DISK)/.kos/include/
+	rsync -a --prune-empty-dirs --include='*/' --include='*.h' --exclude='*' userspace/libc/ $(TCC_DISK)/.kos/include/
 	cp $(TCC_DIR)/include/*.h $(TCC_DISK)/.kos/lib/tcc/include/
 	cp $(TCC_LIBS) $(TCC_CRT) $(TCC_DISK)/.kos/lib/tcc/
 

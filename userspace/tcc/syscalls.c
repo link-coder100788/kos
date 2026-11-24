@@ -1,15 +1,15 @@
-// Checks tcclibc's way into the kernel: one call through kos_syscall for
+// Checks the libc's way into the kernel: one call through kos_syscall for
 // each syscall group (except reading a line, windows and dump, which need a
 // person or print a lot), and fp.S's one-instruction maths. Prints a PASS
 // or FAIL line for each, then how many failed.
-#include "../tcclibc/sys.h"
-#include "../tcclibc/syscall.h"
-#include "../tcclibc/stdio.h"
-#include "../tcclibc/stdlib.h"
-#include "../tcclibc/string.h"
-#include "../tcclibc/math.h"
-#include "../tcclibc/crypto.h"
-#include "../tcclibc/net.h"
+#include "../libc/sys.h"
+#include "../libc/syscall.h"
+#include "../libc/stdio.h"
+#include "../libc/stdlib.h"
+#include "../libc/string.h"
+#include "../libc/math.h"
+#include "../libc/crypto.h"
+#include "../libc/net.h"
 
 static int failed;
 

@@ -36,7 +36,7 @@ pub type Fd = Arc<Object>;
 /// How much a pipe holds before writes wait.
 pub const PIPE_CAPACITY: usize = 64 * 1024;
 
-// open() flags, as in tcclibc's fcntl.h (Linux's values).
+// open() flags, as in the libc's fcntl.h (Linux's values).
 pub const O_ACCMODE: u64 = 3;
 pub const O_RDONLY: u64 = 0;
 pub const O_WRONLY: u64 = 1;

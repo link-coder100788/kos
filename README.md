@@ -300,7 +300,7 @@ See `userspace/prog/ui_demo.c` for a program with a window.
 
 Every program ends with an exit status (0-255): what it passed to `exit`, or 130 if Ctrl+C ended it, 137 if it was killed and 139 if it crashed. `proc_wait(id)` returns it, once the program is gone and whatever it wrote to files is on the disk.
 
-A program has its own current folder, where its relative paths start: it begins in the folder of whoever started it (the shell's, or its parent's for `spawn`), and `fs_chdir` (`chdir` in tcc's C library) changes it, for it and the programs it starts from then on. `cd` in ksh and in an ssh session does that, so a bare `ls` lists the right folder.
+A program has its own current folder, where its relative paths start: it begins in the folder of whoever started it (the shell's, or its parent's for `spawn`), and `fs_chdir` (`chdir`) changes it, for it and the programs it starts from then on. `cd` in ksh and in an ssh session does that, so a bare `ls` lists the right folder.
 
 A program has file descriptors, as on Unix (`kernel/src/fd.rs`): 0, 1 and 2 are its stdin, stdout and stderr, and `printf`, `write` and `readln` use them. Whoever starts a program picks them: the console for `run` and the Programs window, nothing for `bg`, and the parent's own for `spawn`. `spawn_io(path, args, fds)` gives it others, so a shell can feed one program's output to another through a pipe (`fd_pipe`), or send it to a file (`fd_open`). A pipe holds 64 KiB; reading an empty one waits, and gets the end of the input once every program that could write to it has ended. KOS's filesystem reads and writes whole files, so an open file is a copy in kernel memory, written back when its last descriptor is closed or its program ends.
 
@@ -464,7 +464,7 @@ void _start(void) {
 }
 ```
 
-Drop it in `userspace/prog/` and `make disk`, build it from anywhere with `kos-cc` (above), or compile it with `tcc` inside KOS: tcc's copy of the library has `gl.h` too. A program has one context at a time; `kgl_close()` ends it, and the kernel closes it anyway when the program ends.
+Drop it in `userspace/prog/` and `make disk`, build it from anywhere with `kos-cc` (above), or compile it with `tcc` inside KOS, which uses the same library. A program has one context at a time; `kgl_close()` ends it, and the kernel closes it anyway when the program ends.
 
 #### The OpenGL you get
 

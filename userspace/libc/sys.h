@@ -1,15 +1,16 @@
 #ifndef C_SYS_H
 #define C_SYS_H
 
-// The KOS C library for programs tcc builds (tcclibc): a copy of
-// userspace/libc whose syscalls all go through kos_syscall (syscall.h),
-// since tcc can't compile the inline asm the original uses.
+// The KOS C library. clang builds it into the programs in userspace/ and
+// build/libc.a; tcc builds it for the programs it compiles, on KOS and in
+// `make tcc-progs`. So its syscalls all go through kos_syscall (syscall.h,
+// syscall.S): tcc can't compile inline asm that does `svc`.
 //
-// Programs built by /bin/tcc on KOS start at `int main(int argc, char**
-// argv)` (crt1.c calls it, then exit() with what it returns); with
-// -nostartfiles, or from `make tcc-progs`, they start at `void
-// _start(void)` and must end with exit(0) themselves. Run them with
-// `run <name>.elf`.
+// Programs in userspace/prog (the Programs window) and userspace/cmd (/bin)
+// start at `void _start(void)` and must end with exit(status). Programs
+// built by /bin/tcc on KOS start at `int main(int argc, char** argv)`
+// (crt1.c calls it, then exit() with what it returns), unless built with
+// -nostartfiles; run them with `run <name>.elf`.
 //
 // This header is the kernel's side of things. The rest of the library is
 // ordinary C on top of it: string.h, ctype.h, stdlib.h (malloc, strtol,

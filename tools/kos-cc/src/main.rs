@@ -47,16 +47,18 @@ fn libc_dir() -> PathBuf {
     dir.canonicalize().unwrap_or(dir)
 }
 
-/// The library's .c files: the folder's own and one level of subfolders.
+/// The library's .c and .S files: the folder's own and one level of
+/// subfolders, except crt/ (the start files tcc links; these programs have
+/// their own _start).
 fn libc_sources(dir: &Path) -> Vec<PathBuf> {
     let mut sources = Vec::new();
     let mut dirs = vec![dir.to_path_buf()];
     if let Ok(entries) = fs::read_dir(dir) {
-        dirs.extend(entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()));
+        dirs.extend(entries.flatten().map(|e| e.path()).filter(|p| p.is_dir() && !p.ends_with("crt")));
     }
     for d in dirs {
         let Ok(entries) = fs::read_dir(&d) else { continue };
-        sources.extend(entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "c")));
+        sources.extend(entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "c" || x == "S")));
     }
     sources.sort();
     sources

@@ -1,16 +1,16 @@
-// Checks what tcclibc gained for tcc: file descriptors and FILE streams
+// Checks what the libc gained for tcc: file descriptors and FILE streams
 // over whole-file syscalls, errno, setjmp/longjmp, and the number and time
 // functions. Prints a PASS or FAIL line for each, then how many failed.
-#include "../tcclibc/stdio.h"
-#include "../tcclibc/stdlib.h"
-#include "../tcclibc/string.h"
-#include "../tcclibc/math.h"
-#include "../tcclibc/errno.h"
-#include "../tcclibc/fcntl.h"
-#include "../tcclibc/unistd.h"
-#include "../tcclibc/setjmp.h"
-#include "../tcclibc/sys/time.h"
-#include "../tcclibc/sys.h"
+#include "../libc/stdio.h"
+#include "../libc/stdlib.h"
+#include "../libc/string.h"
+#include "../libc/math.h"
+#include "../libc/errno.h"
+#include "../libc/fcntl.h"
+#include "../libc/unistd.h"
+#include "../libc/setjmp.h"
+#include "../libc/sys/time.h"
+#include "../libc/sys.h"
 
 static int failed;
 
