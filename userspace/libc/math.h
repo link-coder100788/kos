@@ -44,6 +44,11 @@ double ceil(double x);
 double round(double x);
 double trunc(double x);
 
+// x * 2^e.
+double ldexp(double x, int e);
+// ldexp, in double precision.
+long double ldexpl(long double x, int e);
+
 // The remainder of x / y, with x's sign.
 double fmod(double x, double y);
 
@@ -51,8 +56,9 @@ double fabs(double x);
 double fmin(double a, double b);
 double fmax(double a, double b);
 
-#define INFINITY (__builtin_inf())
-#define NAN (__builtin_nan(""))
+// tcc has no builtins for these: a too-big constant is infinity, 0/0 is NaN.
+#define INFINITY (1e500)
+#define NAN (0.0/0.0)
 static inline int isnan(double x) { return x != x; }
 static inline int isinf(double x) { return x == INFINITY || x == -INFINITY; }
 

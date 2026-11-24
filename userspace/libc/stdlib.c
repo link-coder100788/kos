@@ -1,6 +1,7 @@
 #include "stdlib.h"
 #include "string.h"
 #include "ctype.h"
+#include "math.h"
 
 void* malloc(size_t size) {
     return alloc(size);
@@ -80,11 +81,11 @@ double strtod(const char* s, char** end) {
     if (*p == '-' || *p == '+') neg = *p++ == '-';
     if (strncasecmp(p, "inf", 3) == 0) {
         if (end) *end = (char*)p + (strncasecmp(p, "infinity", 8) == 0 ? 8 : 3);
-        return neg ? -__builtin_inf() : __builtin_inf();
+        return neg ? -INFINITY : INFINITY;
     }
     if (strncasecmp(p, "nan", 3) == 0) {
         if (end) *end = (char*)p + 3;
-        return __builtin_nan("");
+        return NAN;
     }
     double v = 0;
     int any = 0;
@@ -115,6 +116,23 @@ double strtod(const char* s, char** end) {
 }
 
 double atof(const char* s) { return strtod(s, NULL); }
+
+float strtof(const char* s, char** end) { return (float)strtod(s, end); }
+
+long double strtold(const char* s, char** end) { return strtod(s, end); }
+
+char* getenv(const char* name) {
+    (void)name;
+    return NULL;
+}
+
+char* realpath(const char* path, char* resolved) {
+    size_t len = strlen(path);
+    if (!resolved) resolved = alloc(len + 1);
+    else if (len >= 4096) return NULL;
+    if (resolved) memcpy(resolved, path, len + 1);
+    return resolved;
+}
 
 static void swap_bytes(char* a, char* b, size_t size) {
     while (size--) {

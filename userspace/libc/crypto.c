@@ -1,22 +1,11 @@
 #include "crypto.h"
 #include "string.h"
 #include "sys.h"
+#include "syscall.h"
 
 #include <stdbool.h>
 
-#define SVC_CRYPTO(sub, a0, a1, a2, a3, a4) ({                           \
-    register uint64_t x0 __asm("x0") = (uint64_t)(a0);                  \
-    register uint64_t x1 __asm("x1") = (uint64_t)(a1);                  \
-    register uint64_t x2 __asm("x2") = (uint64_t)(a2);                  \
-    register uint64_t x3 __asm("x3") = (uint64_t)(a3);                  \
-    register uint64_t x4 __asm("x4") = (uint64_t)(a4);                  \
-    register uint64_t x16 __asm("x16") = (uint64_t)(sub);               \
-    __asm volatile("svc #0xf"                                            \
-                   : "+r"(x0)                                           \
-                   : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x16)       \
-                   : "memory");                                         \
-    (long)x0;                                                            \
-})
+#define SVC_CRYPTO(sub, a0, a1, a2, a3, a4) ((long)KOS_SVC(0xf, sub, a0, a1, a2, a3, a4))
 
 enum { SHA256, SHA512, HMAC_SHA256, AES_GCM_SEAL, AES_GCM_OPEN, ARGON2ID_HASH, ARGON2ID_VERIFY };
 

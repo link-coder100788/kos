@@ -2,20 +2,9 @@
 #include "string.h"
 #include "ctype.h"
 #include "sys.h"
+#include "syscall.h"
 
-#define SVC_NET5(sub, a0, a1, a2, a3, a4) ({                             \
-    register uint64_t x0 __asm("x0") = (uint64_t)(a0);                  \
-    register uint64_t x1 __asm("x1") = (uint64_t)(a1);                  \
-    register uint64_t x2 __asm("x2") = (uint64_t)(a2);                  \
-    register uint64_t x3 __asm("x3") = (uint64_t)(a3);                  \
-    register uint64_t x4 __asm("x4") = (uint64_t)(a4);                  \
-    register uint64_t x16 __asm("x16") = (uint64_t)(sub);               \
-    __asm volatile("svc #0xc"                                            \
-                   : "+r"(x0)                                           \
-                   : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x16)       \
-                   : "memory");                                         \
-    (long)x0;                                                            \
-})
+#define SVC_NET5(sub, a0, a1, a2, a3, a4) ((long)KOS_SVC(0xc, sub, a0, a1, a2, a3, a4))
 #define SVC_NET(sub, a0, a1, a2, a3) SVC_NET5(sub, a0, a1, a2, a3, 0)
 
 enum { HTTP, HTTP_BODY, HTTP_HEADERS, PING, ADDRESS, TCP_CONNECT, TCP_SEND, TCP_RECV, TCP_CLOSE,

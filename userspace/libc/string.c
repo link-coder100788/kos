@@ -1,6 +1,7 @@
 #include "string.h"
 #include "ctype.h"
 #include "sys.h"
+#include "errno.h"
 
 void* memcpy(void* dst, const void* src, size_t n) {
     unsigned char* d = dst;
@@ -204,4 +205,25 @@ char* strtok_r(char* s, const char* delim, char** save) {
 char* strtok(char* s, const char* delim) {
     static char* save;
     return strtok_r(s, delim, &save);
+}
+
+char* strerror(int e) {
+    switch (e) {
+        case 0: return "no error";
+        case ENOENT: return "no such file or directory";
+        case EIO: return "input/output error";
+        case EBADF: return "bad file descriptor";
+        case ENOMEM: return "out of memory";
+        case EACCES: return "permission denied";
+        case EEXIST: return "file exists";
+        case EINVAL: return "invalid argument";
+        case EMFILE: return "too many open files";
+        case ERANGE: return "result out of range";
+        case ENOSYS: return "not supported on KOS";
+        default: return "unknown error";
+    }
+}
+
+void bzero(void* dst, size_t n) {
+    memset(dst, 0, n);
 }

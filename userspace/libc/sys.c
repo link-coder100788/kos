@@ -1,41 +1,17 @@
 #include "sys.h"
+#include "syscall.h"
 
 __attribute__((noreturn)) void exit(int status) {
-    register uint64_t s __asm("x0") = (uint64_t)status;
-    __asm volatile(
-        "nop\n"
-        "svc #0\n"
-        "nop"
-        :
-        : "r"(s)
-        : "memory"
-    );
+    KOS_SVC(0x0, 0, status, 0, 0, 0, 0);
     __builtin_unreachable();
 }
 
 void write_byte(const uint8_t* byte) {
-    register uint64_t b __asm("x0") = *byte;
-    __asm volatile(
-        "nop\n"
-        "svc #0x1\n"
-        "nop"
-        :
-        : "r"(b)
-        : "memory"
-    );
+    KOS_SVC(0x1, 0, *byte, 0, 0, 0, 0);
 }
 
 void write_bytes(const uint8_t* bytes, size_t len) {
-    register const uint8_t* b __asm("x0") = bytes;
-    register size_t l __asm("x1") = len;
-    __asm volatile(
-        "nop\n"
-        "svc #0x2\n"
-        "nop"
-        :
-        : "r"(b), "r"(l)
-        : "memory"
-    );
+    KOS_SVC(0x2, 0, bytes, len, 0, 0, 0);
 }
 
 void write(const char* str) {
@@ -50,28 +26,11 @@ void writeln(const char* str) {
 }
 
 void yield(void) {
-    __asm volatile(
-        "nop\n"
-        "svc #0x9\n"
-        "nop"
-        :
-        :
-        : "memory"
-    );
+    KOS_SVC(0x9, 0, 0, 0, 0, 0, 0);
 }
 
 long args(char* buf, size_t max_len) {
-    register uint64_t p __asm("x0") = (uint64_t)buf;
-    register uint64_t l __asm("x1") = (uint64_t)max_len;
-    __asm volatile(
-        "nop\n"
-        "svc #0xa\n"
-        "nop"
-        : "+r"(p)
-        : "r"(l)
-        : "memory"
-    );
-    return (long)p;
+    return (long)KOS_SVC(0xa, 0, buf, max_len, 0, 0, 0);
 }
 
 int get_argv(char** argv, int max) {
@@ -93,132 +52,41 @@ int get_argv(char** argv, int max) {
 }
 
 long readln(char* buf, size_t max_len) {
-    register uint64_t p __asm("x0") = (uint64_t)buf;
-    register uint64_t l __asm("x1") = (uint64_t)max_len;
-    __asm volatile(
-        "nop\n"
-        "svc #0x3\n"
-        "nop"
-        : "+r"(p)
-        : "r"(l)
-        : "memory"
-    );
-    return (long)p;
+    return (long)KOS_SVC(0x3, 0, buf, max_len, 0, 0, 0);
 }
 
+// Syscall 4 is memory; the sub-command picks what it does.
 void* alloc(size_t size) {
-    register uint64_t s __asm("x0") = size;
-    register uint64_t z __asm("x16") = 0x0;
-    __asm volatile(
-        "nop\n"
-        "svc #0x4\n"
-        "nop"
-        : "+r"(s)
-        : "r"(z)
-        : "memory"
-    );
-    return (void*)s;
+    return (void*)KOS_SVC(0x4, 0x0, size, 0, 0, 0, 0);
 }
 
 void* alloc_n(size_t size, int n) {
-    register uint64_t s __asm("x0") = size;
-    register uint64_t t __asm("x1") = n;
-    register uint64_t z __asm("x16") = 0x1;
-    __asm volatile(
-        "nop\n"
-        "svc #0x4\n"
-        "nop"
-        : "+r"(s)
-        : "r"(t), "r"(z)
-        : "memory"
-    );
-    return (void*)s;
+    return (void*)KOS_SVC(0x4, 0x1, size, n, 0, 0, 0);
 }
 
 void* alloc_z(size_t size) {
-    register uint64_t s __asm("x0") = size;
-    register uint64_t z __asm("x16") = 0x2;
-    __asm volatile(
-        "nop\n"
-        "svc #0x4\n"
-        "nop"
-        : "+r"(s)
-        : "r"(z)
-        : "memory"
-    );
-    return (void*)s;
+    return (void*)KOS_SVC(0x4, 0x2, size, 0, 0, 0, 0);
 }
 
 void* alloc_n_z(size_t size, int n) {
-    register uint64_t s __asm("x0") = size;
-    register uint64_t t __asm("x1") = n;
-    register uint64_t z __asm("x16") = 0x3;
-    __asm volatile(
-        "nop\n"
-        "svc #0x4\n"
-        "nop"
-        : "+r"(s)
-        : "r"(t), "r"(z)
-        : "memory"
-    );
-    return (void*)s;
+    return (void*)KOS_SVC(0x4, 0x3, size, n, 0, 0, 0);
 }
 
 void free(void* ptr) {
-    register uint64_t p __asm("x0") = (uint64_t)ptr;
-    register uint64_t z __asm("x16") = 0x6;
-    __asm volatile(
-        "nop\n"
-        "svc #0x4\n"
-        "nop"
-        : "+r"(p)
-        : "r"(z)
-        : "memory"
-    );
+    KOS_SVC(0x4, 0x6, ptr, 0, 0, 0, 0);
 }
 
 size_t mem_free() {
-    register uint64_t s __asm("x0") = 0;
-    register uint64_t z __asm("x16") = 0x4;
-    __asm volatile(
-        "nop\n"
-        "svc #0x4\n"
-        "nop"
-        : "+r"(s)
-        : "r"(z)
-        : "memory"
-    );
-    return (size_t)s;
+    return (size_t)KOS_SVC(0x4, 0x4, 0, 0, 0, 0, 0);
 }
 
 size_t mem_total() {
-    register uint64_t s __asm("x0") = 0;
-    register uint64_t z __asm("x16") = 0x5;
-    __asm volatile(
-        "nop\n"
-        "svc #0x4\n"
-        "nop"
-        : "+r"(s)
-        : "r"(z)
-        : "memory"
-    );
-    return (size_t)s;
+    return (size_t)KOS_SVC(0x4, 0x5, 0, 0, 0, 0, 0);
 }
 
 // Calls a syscall that takes a sub-command in x16 and up to four
-// arguments, and returns x0. `n` must be a literal.
-#define SVC(n, sub, a0, a1, a2, a3) ({                                   \
-    register uint64_t x0 __asm("x0") = (uint64_t)(a0);                  \
-    register uint64_t x1 __asm("x1") = (uint64_t)(a1);                  \
-    register uint64_t x2 __asm("x2") = (uint64_t)(a2);                  \
-    register uint64_t x3 __asm("x3") = (uint64_t)(a3);                  \
-    register uint64_t x16 __asm("x16") = (uint64_t)(sub);               \
-    __asm volatile("svc #" #n                                            \
-                   : "+r"(x0)                                           \
-                   : "r"(x1), "r"(x2), "r"(x3), "r"(x16)                \
-                   : "memory");                                         \
-    x0;                                                                  \
-})
+// arguments, and returns x0.
+#define SVC(n, sub, a0, a1, a2, a3) KOS_SVC(n, sub, a0, a1, a2, a3, 0)
 
 static size_t c_strlen(const char* s) {
     size_t len = 0;
@@ -583,14 +451,5 @@ fs_entry_t* fs_list(const char* path, int* count) {
 }
 
 long uname(utsname_t* buf) {
-    register uint64_t p __asm("x0") = (uint64_t)buf;
-    __asm volatile(
-        "nop\n"
-        "svc #0xe\n"
-        "nop"
-        : "+r"(p)
-        :
-        : "memory"
-    );
-    return (long)p;
+    return (long)KOS_SVC(0xe, 0, buf, 0, 0, 0, 0);
 }

@@ -178,37 +178,7 @@ double tan(double x) {
     return sin(x) / cos(x);
 }
 
-// ---- square roots and rounding: one instruction each ---------------------------
-
-double sqrt(double x) {
-    double r;
-    __asm("fsqrt %d0, %d1" : "=w"(r) : "w"(x));
-    return r;
-}
-
-double floor(double x) {
-    double r;
-    __asm("frintm %d0, %d1" : "=w"(r) : "w"(x));
-    return r;
-}
-
-double ceil(double x) {
-    double r;
-    __asm("frintp %d0, %d1" : "=w"(r) : "w"(x));
-    return r;
-}
-
-double round(double x) {
-    double r;
-    __asm("frinta %d0, %d1" : "=w"(r) : "w"(x));
-    return r;
-}
-
-double trunc(double x) {
-    double r;
-    __asm("frintz %d0, %d1" : "=w"(r) : "w"(x));
-    return r;
-}
+// sqrt, floor, ceil, round and trunc are one instruction each: see fp.S.
 
 double fabs(double x) {
     bits_t b = { x };
@@ -218,6 +188,18 @@ double fabs(double x) {
 
 double fmin(double a, double b) { return a != a ? b : b != b ? a : a < b ? a : b; }
 double fmax(double a, double b) { return a != a ? b : b != b ? a : a > b ? a : b; }
+
+double ldexp(double x, int e) {
+    // In steps that can't overflow on the way (2^1000 fits in a double).
+    while (e > 1000) { x *= 0x1p1000; e -= 1000; }
+    while (e < -1000) { x *= 0x1p-1000; e += 1000; }
+    bits_t scale = { 0 };
+    scale.u = (uint64_t)(e + 1023) << 52;
+    // e + 1023 is 23..2023 here, a normal double's exponent.
+    return x * scale.d;
+}
+
+long double ldexpl(long double x, int e) { return ldexp((double)x, e); }
 
 double fmod(double x, double y) {
     if (y == 0 || x != x || y != y || x == INF || x == -INF) return NAN_VALUE;

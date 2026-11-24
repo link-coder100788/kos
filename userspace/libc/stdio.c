@@ -1,6 +1,7 @@
 #include "stdio.h"
 #include "string.h"
 #include "sys.h"
+#include "math.h"
 
 // ---- where formatted text goes ----------------------------------------------
 
@@ -97,7 +98,7 @@ static double pow10i(int e) {
 static int fixed(char* out, double v, int prec) {
     if (prec > 17) prec = 17;
     double scale = pow10i(prec);
-    double whole_f = __builtin_floor(v);
+    double whole_f = floor(v);
     double frac = (v - whole_f) * scale + 0.5;
     unsigned long long frac_i = (unsigned long long)frac;
     if (frac_i >= (unsigned long long)scale) {
@@ -150,10 +151,12 @@ static void format_double(out_t* o, spec_t sp, double v, char conv) {
     int upper = conv == 'F' || conv == 'E' || conv == 'G';
     char body[400];
     int n;
-    int negative = __builtin_signbit(v);
+    // The sign bit, so -0.0 prints as "-0".
+    union { double d; uint64_t u; } bits = { v };
+    int negative = bits.u >> 63;
     if (negative) v = -v;
     const char* prefix = negative ? "-" : sp.plus ? "+" : sp.space ? " " : "";
-    if (v != v || v == __builtin_inf()) {
+    if (v != v || v == INFINITY) {
         const char* word = v != v ? (upper ? "NAN" : "nan") : (upper ? "INF" : "inf");
         sp.zero = 0;
         emit(o, &sp, prefix, word, 3, 0);

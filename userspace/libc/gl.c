@@ -15,17 +15,11 @@
 #include "stdlib.h"
 #include "string.h"
 #include "sys.h"
+#include "syscall.h"
 
 // Syscall 18 is the GPU syscall; the sub-command goes in x16.
 static uint64_t gpu_svc(uint64_t sub, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4) {
-    register uint64_t x0 __asm("x0") = a0;
-    register uint64_t x1 __asm("x1") = a1;
-    register uint64_t x2 __asm("x2") = a2;
-    register uint64_t x3 __asm("x3") = a3;
-    register uint64_t x4 __asm("x4") = a4;
-    register uint64_t x16 __asm("x16") = sub;
-    __asm volatile("svc #18" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x16) : "memory");
-    return x0;
+    return KOS_SVC(18, sub, a0, a1, a2, a3, a4);
 }
 
 enum { GPU_AVAILABLE = 0, GPU_OPEN = 1, GPU_SUBMIT = 2, GPU_HLSL = 3, GPU_CLOSE = 4, GPU_GLSL = 5 };

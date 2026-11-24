@@ -4,7 +4,7 @@
 #![allow(static_mut_refs)]
 #![allow(unused)]
 #![allow(unsafe_op_in_unsafe_fn)]
-#![feature(allocator_api)]
+#![feature(allocator_ext)]
 #![allow(improper_ctypes)]
 #![feature(negative_impls)]
 #![allow(private_interfaces)]
