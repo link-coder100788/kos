@@ -179,6 +179,8 @@ fn test_if_enabled() {
         #[cfg(feature = "test")]
         crate::users::tests::run();
         #[cfg(feature = "test")]
+        crate::settings::tests::run();
+        #[cfg(feature = "test")]
         crate::sound::wav::tests::run();
         #[cfg(feature = "test")]
         crate::test::run_all(&[&crate::test::heap_stress_test, &crate::test::heap_grows_and_shrinks_test]);

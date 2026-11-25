@@ -1137,7 +1137,10 @@ const UTS_LEN: usize = 65;
 /// machine. Returns 0.
 #[syscall(14)]
 pub fn syscall_uname(frame: &mut SyscallContext) {
-    let fields = crate::util::SYSTEM_UNAME;
+    let mut fields = crate::util::SYSTEM_UNAME;
+    // The nodename is the system.hostname setting.
+    let hostname = crate::settings::get("system.hostname");
+    fields[1] = &hostname;
     let Some(buf) = user_bytes_mut(frame, frame[0], (fields.len() * UTS_LEN) as u64) else {
         frame[0] = fail("bad buffer");
         return;

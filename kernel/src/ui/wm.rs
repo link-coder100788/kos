@@ -16,40 +16,40 @@ use crate::ui::apps::{self, App, MouseEvent};
 use crate::ui::gfx::{rgb, text_width, Rect, Surface};
 use crate::ui::window::{Request, WindowId};
 
-pub const SCREEN_W: i32 = display::WIDTH as i32;
-pub const SCREEN_H: i32 = display::HEIGHT as i32;
-const SCREEN: Rect = Rect::new(0, 0, SCREEN_W, SCREEN_H);
-
 const TITLE_H: i32 = 24;
 const BORDER: i32 = 1;
 const CLOSE_SIZE: i32 = 16;
 const TASKBAR_H: i32 = 32;
-const TASKBAR: Rect = Rect::new(0, SCREEN_H - TASKBAR_H, SCREEN_W, TASKBAR_H);
-const START: Rect = Rect::new(4, SCREEN_H - TASKBAR_H + 4, 64, TASKBAR_H - 8);
 const TASK_BUTTON_W: i32 = 150;
 /// How far from a resizable window's edge the mouse can grab it, either
 /// side of the border.
 const GRAB: i32 = 4;
 /// Along an edge, this close to a corner grabs the corner.
 const CORNER: i32 = 14;
-/// A second click on a title bar within this long maximizes.
-const DOUBLE_CLICK_MS: u64 = 400;
-/// Where maximized windows go.
-const WORK_AREA: Rect = Rect::new(0, 0, SCREEN_W, SCREEN_H - TASKBAR_H);
 const MENU_ITEM_H: i32 = 30;
+
+// The screen's size follows the display's mode (see `Wm::apply_settings`).
+fn screen_w() -> i32 { display::width() as i32 }
+fn screen_h() -> i32 { display::height() as i32 }
+fn screen() -> Rect { Rect::new(0, 0, screen_w(), screen_h()) }
+fn taskbar() -> Rect { Rect::new(0, screen_h() - TASKBAR_H, screen_w(), TASKBAR_H) }
+fn start_button() -> Rect { Rect::new(4, screen_h() - TASKBAR_H + 4, 64, TASKBAR_H - 8) }
+/// Where maximized windows go.
+fn work_area() -> Rect { Rect::new(0, 0, screen_w(), screen_h() - TASKBAR_H) }
 const MENU_W: i32 = 170;
 
 const TITLE_FOCUSED: (u32, u32) = (rgb(0x4a, 0x84, 0xc4), rgb(0x2c, 0x5a, 0x92));
 const TITLE_UNFOCUSED: (u32, u32) = (rgb(0x7a, 0x7f, 0x8a), rgb(0x5c, 0x61, 0x6b));
 
 /// Entries in the KOS menu: the app each opens, or None to log out.
-const MENU: [(&str, Option<fn() -> Box<dyn App>>); 8] = [
+const MENU: [(&str, Option<fn() -> Box<dyn App>>); 9] = [
     ("Terminal", Some(|| Box::new(apps::terminal::Terminal::new()))),
     ("Browser", Some(|| Box::new(apps::browser::Browser::new()))),
     ("Programs", Some(|| Box::new(apps::programs::Programs::new()))),
     ("Task Manager", Some(|| Box::new(apps::taskmgr::TaskManager::new()))),
     ("Paint", Some(|| Box::new(apps::paint::Paint::new()))),
     ("K-AI", Some(|| Box::new(apps::kai::KAI::new()))),
+    ("Settings", Some(|| Box::new(apps::settings::Settings::new()))),
     ("About KOS", Some(|| Box::new(apps::about::About::new()))),
     ("Log out", None),
 ];
@@ -235,28 +235,59 @@ pub struct Wm {
     locked: bool,
     clock_second: u64,
     cascade: i32,
+    /// `settings::generation()` when the desktop last applied them.
+    settings_seen: u32,
 }
 
 fn draw_background(s: &mut Surface) {
-    s.fill_gradient(SCREEN, rgb(0x1b, 0x2a, 0x49), rgb(0x46, 0x2c, 0x5a));
-    let text = "KOS";
-    let scale = 10;
-    let x = SCREEN_W - text_width(text, scale) - 40;
-    s.draw_text(x, SCREEN_H - TASKBAR_H - 8 * scale - 30, text, rgb(0x5a, 0x5e, 0x8a), scale, scale);
+    let (top, bottom, logo) = crate::settings::wallpaper();
+    s.fill_gradient(screen(), top, bottom);
+    if crate::settings::is_on("desktop.logo") {
+        let text = "KOS";
+        let scale = 10;
+        let x = screen_w() - text_width(text, scale) - 40;
+        s.draw_text(x, screen_h() - TASKBAR_H - 8 * scale - 30, text, logo, scale, scale);
+    }
+}
+
+/// The taskbar clock's text, as the clock settings say.
+fn clock_text() -> String {
+    use crate::settings::{get, is_on};
+    let Some(t) = crate::drivers::rtc::local_now() else {
+        // No clock chip: the uptime.
+        let up = timer::uptime_ms() / 1000;
+        return format!("{:02}:{:02}:{:02}", up / 3600, up / 60 % 60, up % 60);
+    };
+    let mut time = if get("clock.format") == "12h" {
+        format!("{}:{:02}", (t.hour + 11) % 12 + 1, t.minute)
+    } else {
+        format!("{:02}:{:02}", t.hour, t.minute)
+    };
+    if is_on("clock.seconds") {
+        time += &format!(":{:02}", t.second);
+    }
+    if get("clock.format") == "12h" {
+        time += if t.hour < 12 { " am" } else { " pm" };
+    }
+    if is_on("clock.date") {
+        format!("{} {} {}  {}", t.weekday_name(), t.month_name(), t.day, time)
+    } else {
+        time
+    }
 }
 
 impl Wm {
     pub fn new() -> Self {
-        let mut background = Surface::new(SCREEN_W, SCREEN_H, 0);
+        let mut background = Surface::new(screen_w(), screen_h(), 0);
         draw_background(&mut background);
         Self {
-            back: Surface::new(SCREEN_W, SCREEN_H, 0),
+            back: Surface::new(screen_w(), screen_h(), 0),
             background,
             windows: Vec::new(),
             taskbar: Vec::new(),
             focused: None,
-            damage: SCREEN,
-            cursor: (SCREEN_W / 2, SCREEN_H / 2),
+            damage: screen(),
+            cursor: (screen_w() / 2, screen_h() / 2),
             pointer: Pointer::Arrow,
             cursor_drawn: None,
             dragging: None,
@@ -268,6 +299,7 @@ impl Wm {
             locked: false,
             clock_second: u64::MAX,
             cascade: 0,
+            settings_seen: crate::settings::generation(),
         }
     }
 
@@ -292,7 +324,7 @@ impl Wm {
     }
 
     fn damage(&mut self, rect: Rect) {
-        self.damage = self.damage.union(rect.intersect(SCREEN));
+        self.damage = self.damage.union(rect.intersect(screen()));
     }
 
     fn index_of(&self, id: WindowId) -> Option<usize> {
@@ -308,8 +340,8 @@ impl Wm {
         // Cascade new windows from the top left, wrapping before they'd
         // run off the screen.
         let step = 32 * self.cascade;
-        let x = (40 + step).min((SCREEN_W - frame_w).max(0));
-        let y = (30 + step).min((SCREEN_H - TASKBAR_H - frame_h).max(0));
+        let x = (40 + step).min((screen_w() - frame_w).max(0));
+        let y = (30 + step).min((screen_h() - TASKBAR_H - frame_h).max(0));
         self.cascade = (self.cascade + 1) % 8;
         log::debug!("open window {} '{}' {}x{} at ({}, {})", id, app.title(), w, h, x, y);
         let resizable = app.resizable();
@@ -330,7 +362,7 @@ impl Wm {
         window.app.on_close();
         self.taskbar.retain(|&t| t != id);
         self.damage(window.frame());
-        self.damage(TASKBAR);
+        self.damage(taskbar());
         if self.focused == Some(id) {
             self.focused = None;
             if let Some(top) = self.windows.last() {
@@ -357,7 +389,7 @@ impl Wm {
         }
         self.windows.push(window);
         self.focused = Some(id);
-        self.damage(TASKBAR);
+        self.damage(taskbar());
     }
 
     fn toggle_shade(&mut self, i: usize) {
@@ -395,7 +427,7 @@ impl Wm {
             Some(restore) => restore,
             None => {
                 self.windows[i].restore = Some(self.windows[i].frame());
-                WORK_AREA
+                work_area()
             }
         };
         let window = &self.windows[i];
@@ -409,9 +441,9 @@ impl Wm {
         let (min_w, min_h) = self.windows[i].min_frame();
         let (mut left, mut top, mut right, mut bottom) = (start.x, start.y, start.right(), start.bottom());
         if edges & LEFT != 0 { left = (left + dx).clamp(0, right - min_w); }
-        if edges & RIGHT != 0 { right = (right + dx).clamp(left + min_w, SCREEN_W.max(left + min_w)); }
+        if edges & RIGHT != 0 { right = (right + dx).clamp(left + min_w, screen_w().max(left + min_w)); }
         if edges & TOP != 0 { top = (top + dy).clamp(0, bottom - min_h); }
-        if edges & BOTTOM != 0 { bottom = (bottom + dy).clamp(top + min_h, WORK_AREA.bottom().max(top + min_h)); }
+        if edges & BOTTOM != 0 { bottom = (bottom + dy).clamp(top + min_h, work_area().bottom().max(top + min_h)); }
         Rect::new(left, top, right - left, bottom - top)
     }
 
@@ -490,8 +522,8 @@ impl Wm {
             if let Some(i) = self.index_of(id) {
                 let old = self.windows[i].frame();
                 // Keep the title bar reachable.
-                self.windows[i].x = (x - gx).clamp(-old.w + 60, SCREEN_W - 60);
-                self.windows[i].y = (y - gy).clamp(0, SCREEN_H - TASKBAR_H - TITLE_H);
+                self.windows[i].x = (x - gx).clamp(-old.w + 60, screen_w() - 60);
+                self.windows[i].y = (y - gy).clamp(0, screen_h() - TASKBAR_H - TITLE_H);
                 let new = self.windows[i].frame();
                 self.damage(old.union(new));
             }
@@ -524,12 +556,12 @@ impl Wm {
                 Some(None) => crate::users::log_out(),
                 None => {}
             }
-            if item.is_some() || START.contains(x, y) {
+            if item.is_some() || start_button().contains(x, y) {
                 return;
             }
         }
-        if TASKBAR.contains(x, y) {
-            if START.contains(x, y) {
+        if taskbar().contains(x, y) {
+            if start_button().contains(x, y) {
                 if !self.locked {
                     self.set_menu(true);
                 }
@@ -548,7 +580,7 @@ impl Wm {
             if let Some(f) = self.focused.take().and_then(|f| self.index_of(f)) {
                 let frame = self.windows[f].frame();
                 self.damage(frame);
-                self.damage(TASKBAR);
+                self.damage(taskbar());
             }
             return;
         };
@@ -567,7 +599,7 @@ impl Wm {
             self.pointer = Pointer::Resize(edges);
         } else if window.title_bar().contains(x, y) {
             let now = timer::uptime_ms();
-            let double = matches!(self.title_click, Some((last, at)) if last == id && now - at <= DOUBLE_CLICK_MS);
+            let double = matches!(self.title_click, Some((last, at)) if last == id && now - at <= crate::settings::double_click_ms());
             self.title_click = if double { None } else { Some((id, now)) };
             if double {
                 self.toggle_maximize(i);
@@ -608,7 +640,7 @@ impl Wm {
     // ---- taskbar & menu ----------------------------------------------------
 
     fn task_button(&self, i: usize) -> Rect {
-        Rect::new(START.right() + 8 + i as i32 * (TASK_BUTTON_W + 4), START.y, TASK_BUTTON_W, START.h)
+        Rect::new(start_button().right() + 8 + i as i32 * (TASK_BUTTON_W + 4), start_button().y, TASK_BUTTON_W, start_button().h)
     }
 
     fn task_button_at(&self, x: i32, y: i32) -> Option<usize> {
@@ -617,7 +649,7 @@ impl Wm {
 
     fn menu_rect(&self) -> Rect {
         let h = MENU.len() as i32 * MENU_ITEM_H + 8;
-        Rect::new(START.x, TASKBAR.y - h, MENU_W, h)
+        Rect::new(start_button().x, taskbar().y - h, MENU_W, h)
     }
 
     fn menu_item_at(&self, x: i32, y: i32) -> Option<usize> {
@@ -631,21 +663,21 @@ impl Wm {
         self.menu_open = open;
         self.menu_hover = None;
         self.damage(self.menu_rect());
-        self.damage(START);
+        self.damage(start_button());
     }
 
     fn draw_taskbar(&mut self) {
         let s = &mut self.back;
-        s.fill_gradient(TASKBAR, rgb(0x2a, 0x2e, 0x38), rgb(0x16, 0x18, 0x1e));
-        s.fill_rect(Rect::new(0, TASKBAR.y, SCREEN_W, 1), rgb(0x50, 0x56, 0x64));
+        s.fill_gradient(taskbar(), rgb(0x2a, 0x2e, 0x38), rgb(0x16, 0x18, 0x1e));
+        s.fill_rect(Rect::new(0, taskbar().y, screen_w(), 1), rgb(0x50, 0x56, 0x64));
         let (top, bottom) = if self.menu_open { TITLE_FOCUSED } else { (rgb(0x3c, 0x6c, 0xb0), rgb(0x24, 0x48, 0x80)) };
-        s.fill_gradient(START, top, bottom);
-        s.draw_text(START.x + (START.w - text_width("KOS", 1)) / 2, START.y + 4, "KOS", 0x00ffffff, 1, 2);
+        s.fill_gradient(start_button(), top, bottom);
+        s.draw_text(start_button().x + (start_button().w - text_width("KOS", 1)) / 2, start_button().y + 4, "KOS", 0x00ffffff, 1, 2);
         for (i, &id) in self.taskbar.iter().enumerate() {
             let Some(w) = self.windows.iter().find(|w| w.id == id) else { continue };
-            let r = Rect::new(START.right() + 8 + i as i32 * (TASK_BUTTON_W + 4), START.y, TASK_BUTTON_W, START.h);
+            let r = Rect::new(start_button().right() + 8 + i as i32 * (TASK_BUTTON_W + 4), start_button().y, TASK_BUTTON_W, start_button().h);
             // Leave room for the clock at the right.
-            if r.right() > SCREEN_W - 160 { break; }
+            if r.right() > screen_w() - 160 { break; }
             let focused = self.focused == Some(w.id);
             s.fill_rect(r, if focused { rgb(0x4a, 0x50, 0x60) } else { rgb(0x32, 0x36, 0x40) });
             s.rect_outline(r, rgb(0x5a, 0x60, 0x70));
@@ -653,16 +685,8 @@ impl Wm {
             let title: String = w.title.chars().take(max_chars).collect();
             s.draw_text(r.x + 8, r.y + 4, &title, 0x00ffffff, 1, 2);
         }
-        // The date and local time from the clock chip, or the uptime if
-        // there isn't one.
-        let clock = match crate::drivers::rtc::local_now() {
-            Some(t) => format!("{} {} {}  {:02}:{:02}", t.weekday_name(), t.month_name(), t.day, t.hour, t.minute),
-            None => {
-                let up = timer::uptime_ms() / 1000;
-                format!("{:02}:{:02}:{:02}", up / 3600, up / 60 % 60, up % 60)
-            }
-        };
-        s.draw_text(SCREEN_W - text_width(&clock, 1) - 12, START.y + 4, &clock, rgb(0xd0, 0xd4, 0xdc), 1, 2);
+        let clock = clock_text();
+        s.draw_text(screen_w() - text_width(&clock, 1) - 12, start_button().y + 4, &clock, rgb(0xd0, 0xd4, 0xdc), 1, 2);
     }
 
     fn draw_menu(&mut self) {
@@ -680,8 +704,66 @@ impl Wm {
 
     // ---- rendering ---------------------------------------------------------
 
+    /// Applies changed settings the desktop owns: the resolution, the
+    /// wallpaper, and the clock (redrawn with the taskbar).
+    fn apply_settings(&mut self) {
+        let (w, h) = crate::settings::resolution();
+        if (w, h) != (display::width(), display::height()) {
+            match display::set_mode(w, h) {
+                Ok(()) => self.screen_resized(),
+                Err(e) => log::warn!("can't switch to {}x{}: {}", w, h, e),
+            }
+        }
+        draw_background(&mut self.background);
+        self.damage(screen());
+    }
+
+    /// Fits everything to the display's new size.
+    fn screen_resized(&mut self) {
+        let (w, h) = (screen_w(), screen_h());
+        // Let the old buffers go before making the new ones.
+        self.back = Surface::new(0, 0, 0);
+        self.background = Surface::new(0, 0, 0);
+        self.back = Surface::new(w, h, 0);
+        self.background = Surface::new(w, h, 0);
+        self.cursor = (self.cursor.0.clamp(0, w - 1), self.cursor.1.clamp(0, h - 1));
+        // The new framebuffer has no cursor on it.
+        self.cursor_drawn = None;
+        self.dragging = None;
+        self.resizing = None;
+        self.menu_open = false;
+        for i in 0..self.windows.len() {
+            if self.windows[i].restore.is_some() {
+                self.set_frame(i, work_area());
+                continue;
+            }
+            // Shrink what no longer fits (if it can), then keep its title
+            // bar on screen.
+            let mut frame = self.windows[i].frame();
+            let resize = self.windows[i].resizable && !self.windows[i].shaded;
+            if resize {
+                let (min_w, min_h) = self.windows[i].min_frame();
+                frame.w = frame.w.min(w).max(min_w);
+                frame.h = frame.h.min(work_area().h).max(min_h);
+            }
+            frame.x = frame.x.clamp(0, (w - frame.w).max(0));
+            frame.y = frame.y.clamp(0, (work_area().bottom() - frame.h).max(0));
+            if resize {
+                self.set_frame(i, frame);
+            } else {
+                (self.windows[i].x, self.windows[i].y) = (frame.x, frame.y);
+            }
+        }
+        self.damage = screen();
+    }
+
     /// Lets apps update (clock, terminal output, ...) and damages what changed.
     pub fn tick(&mut self) {
+        let generation = crate::settings::generation();
+        if generation != self.settings_seen {
+            self.settings_seen = generation;
+            self.apply_settings();
+        }
         for i in 0..self.windows.len() {
             if self.windows[i].app.tick() {
                 self.redraw_window(i);
@@ -690,7 +772,7 @@ impl Wm {
         let second = timer::uptime_ms() / 1000;
         if second != self.clock_second {
             self.clock_second = second;
-            self.damage(TASKBAR);
+            self.damage(taskbar());
         }
     }
 
@@ -757,7 +839,7 @@ impl Wm {
                     Self::draw_window(&mut self.back, w, self.focused == Some(w.id));
                 }
             }
-            if !TASKBAR.intersect(damage).is_empty() {
+            if !taskbar().intersect(damage).is_empty() {
                 self.draw_taskbar();
             }
             if self.menu_open {
@@ -787,17 +869,18 @@ impl Wm {
             self.draw_cursor(fb);
             shown = shown.union(self.pointer.rect(self.cursor));
         }
-        let r = shown.intersect(SCREEN);
+        let r = shown.intersect(screen());
         if !r.is_empty() {
             display::flush(r.x as usize, r.y as usize, r.w as usize, r.h as usize);
         }
     }
 
     fn copy_to_screen(&self, fb: &mut [u32], rect: Rect) {
-        let r = rect.intersect(SCREEN);
+        let r = rect.intersect(screen());
         if r.is_empty() { return; }
+        let width = self.back.width;
         for y in r.y..r.bottom() {
-            let start = (y * SCREEN_W + r.x) as usize;
+            let start = (y * width + r.x) as usize;
             fb[start..start + r.w as usize].copy_from_slice(&self.back.pixels[start..start + r.w as usize]);
         }
     }
@@ -808,8 +891,8 @@ impl Wm {
             for col in 0..r.w {
                 let b = self.pointer.pixel(col as usize, row as usize);
                 let (x, y) = (r.x + col, r.y + row);
-                if b == b' ' || !SCREEN.contains(x, y) { continue; }
-                fb[(y * SCREEN_W + x) as usize] = if b == b'X' { 0 } else { 0x00ffffff };
+                if b == b' ' || !screen().contains(x, y) { continue; }
+                fb[(y * self.back.width + x) as usize] = if b == b'X' { 0 } else { 0x00ffffff };
             }
         }
         self.cursor_drawn = Some((self.cursor, self.pointer));

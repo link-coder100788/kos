@@ -58,8 +58,9 @@ DISK     ?= disk.img
 SMP      ?= 5
 MEM      ?= 512M
 # QEMU display backend for run-gui: cocoa on macOS, gtk or sdl on Linux.
-# zoom-to-fit scales the 1024x768 screen to the window: resize it, or go
-# full screen, and KOS grows with it (the mouse still lines up).
+# zoom-to-fit scales KOS's screen (its size is display.resolution in
+# Settings) to the window: resize it, or go full screen, and KOS grows
+# with it (the mouse still lines up).
 GUI      ?= $(if $(filter Darwin,$(shell uname -s)),cocoa,gtk)$(comma)zoom-to-fit=on
 # The display device for run-gui: virtio-gpu or ramfb. KOS uses whichever
 # it finds.

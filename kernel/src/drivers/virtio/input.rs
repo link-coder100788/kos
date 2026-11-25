@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use core::ptr::read_volatile;
 use crate::arch::gic;
 use crate::drivers::input::{self, InputEvent, Key, MouseButton};
-use crate::drivers::display::{HEIGHT, WIDTH};
+use crate::drivers::display;
 use crate::drivers::virtio::mmio::{find_devices, Device, VirtQueue};
 use crate::mm::frame;
 use crate::mm::layout::phys_to_virt;
@@ -71,7 +71,7 @@ static STATE: IrqMutex<State> = IrqMutex::new(State {
     shift: false,
     ctrl: false,
     caps: false,
-    mouse: (WIDTH / 2, HEIGHT / 2),
+    mouse: (0, 0),
     mouse_moved: false,
 });
 
@@ -123,7 +123,7 @@ pub fn init() {
 
 fn scale(value: u32, max: u32, size: usize) -> usize {
     if max == 0 { return 0; }
-    (value.min(max) as usize * (size - 1)) / max as usize
+    (value.min(max) as usize * size.saturating_sub(1)) / max as usize
 }
 
 fn handle_event(state: &mut State, abs_max: (u32, u32), ev: RawEvent) {
@@ -153,8 +153,8 @@ fn handle_event(state: &mut State, abs_max: (u32, u32), ev: RawEvent) {
         }
         EV_ABS => {
             match ev.code {
-                ABS_X => state.mouse.0 = scale(ev.value, abs_max.0, WIDTH),
-                ABS_Y => state.mouse.1 = scale(ev.value, abs_max.1, HEIGHT),
+                ABS_X => state.mouse.0 = scale(ev.value, abs_max.0, display::width()),
+                ABS_Y => state.mouse.1 = scale(ev.value, abs_max.1, display::height()),
                 _ => return,
             }
             state.mouse_moved = true;
@@ -162,8 +162,8 @@ fn handle_event(state: &mut State, abs_max: (u32, u32), ev: RawEvent) {
         EV_REL => match ev.code {
             REL_X | REL_Y => {
                 let delta = ev.value as i32 as isize;
-                let (pos, size) = if ev.code == REL_X { (&mut state.mouse.0, WIDTH) } else { (&mut state.mouse.1, HEIGHT) };
-                *pos = (*pos as isize + delta).clamp(0, size as isize - 1) as usize;
+                let (pos, size) = if ev.code == REL_X { (&mut state.mouse.0, display::width()) } else { (&mut state.mouse.1, display::height()) };
+                *pos = (*pos as isize + delta).clamp(0, (size as isize - 1).max(0)) as usize;
                 state.mouse_moved = true;
             }
             REL_WHEEL => input::push(InputEvent::Scroll(ev.value as i32)),

@@ -60,9 +60,13 @@ pub fn unix_time() -> Option<u64> {
     is_present().then(|| reg(RTCDR) as u64)
 }
 
-/// The local time zone's offset from UTC in seconds (0 if the host didn't
-/// say).
+/// The local time zone's offset from UTC in seconds: the setting's, else
+/// the host's (0 if the host didn't say).
 pub fn utc_offset() -> i32 {
+    // The clock.utc_offset setting, unless it's left to the host.
+    if let Some(offset) = crate::settings::utc_offset() {
+        return offset;
+    }
     let cached = UTC_OFFSET.load(Ordering::Relaxed);
     if cached != i32::MIN {
         return cached;

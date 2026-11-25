@@ -24,6 +24,7 @@ const TIMEOUT_MS: u64 = 1000;
 // Command and response types (virtio spec 5.7.6.7).
 const CMD_GET_DISPLAY_INFO: u32 = 0x0100;
 const CMD_RESOURCE_CREATE_2D: u32 = 0x0101;
+const CMD_RESOURCE_UNREF: u32 = 0x0102;
 const CMD_SET_SCANOUT: u32 = 0x0103;
 const CMD_RESOURCE_FLUSH: u32 = 0x0104;
 const CMD_TRANSFER_TO_HOST_2D: u32 = 0x0105;
@@ -33,7 +34,9 @@ const RESP_OK_DISPLAY_INFO: u32 = 0x1101;
 
 /// Memory bytes B,G,R,X: a u32 of 0x00RRGGBB, same as ramfb's XRGB8888.
 const FORMAT_B8G8R8X8_UNORM: u32 = 2;
-const RESOURCE_ID: u32 = 1;
+/// The screen's resource is 1 or 2: a new mode makes the other one,
+/// then drops the old.
+const FIRST_RESOURCE: u32 = 1;
 const SCANOUT: u32 = 0;
 const MAX_SCANOUTS: usize = 16;
 /// Extra pixels redisplayed around each flushed rectangle (see `Gpu::flush`).
@@ -94,6 +97,13 @@ struct ResourceAttachBacking {
 }
 
 #[repr(C)]
+struct ResourceUnref {
+    hdr: CtrlHdr,
+    resource_id: u32,
+    padding: u32,
+}
+
+#[repr(C)]
 struct SetScanout {
     hdr: CtrlHdr,
     r: GpuRect,
@@ -131,6 +141,8 @@ struct Gpu {
     page: usize,
     width: u32,
     height: u32,
+    /// The resource being scanned out.
+    resource: u32,
 }
 
 static GPU: Spinlock<Option<Gpu>> = Spinlock::new(None);
@@ -188,6 +200,40 @@ impl Gpu {
         (mode.enabled != 0).then_some((mode.r.width, mode.r.height))
     }
 
+    /// Makes a `width` x `height` resource backed by the framebuffer at
+    /// `fb_phys`, shows it, and drops the one shown before.
+    fn scan_out(&mut self, fb_phys: usize, width: u32, height: u32) -> Result<(), &'static str> {
+        let old = self.resource;
+        let resource = if old == FIRST_RESOURCE { FIRST_RESOURCE + 1 } else { FIRST_RESOURCE };
+        self.command_ok(ResourceCreate2d {
+            hdr: hdr(CMD_RESOURCE_CREATE_2D),
+            resource_id: resource,
+            format: FORMAT_B8G8R8X8_UNORM,
+            width,
+            height,
+        })?;
+        self.command_ok(ResourceAttachBacking {
+            hdr: hdr(CMD_RESOURCE_ATTACH_BACKING),
+            resource_id: resource,
+            nr_entries: 1,
+            addr: fb_phys as u64,
+            length: width * height * 4,
+            padding: 0,
+        })?;
+        self.command_ok(SetScanout {
+            hdr: hdr(CMD_SET_SCANOUT),
+            r: GpuRect { x: 0, y: 0, width, height },
+            scanout_id: SCANOUT,
+            resource_id: resource,
+        })?;
+        (self.resource, self.width, self.height) = (resource, width, height);
+        if old != 0 {
+            self.command_ok(ResourceUnref { hdr: hdr(CMD_RESOURCE_UNREF), resource_id: old, padding: 0 })?;
+        }
+        self.flush(0, 0, width, height, width * 4);
+        Ok(())
+    }
+
     /// Copies the rectangle to the host, then has it redisplay a slightly
     /// bigger one: QEMU's Cocoa window, when scaled, can round a redisplay
     /// inwards and leave the edge pixels stale (e.g. bits of an old cursor).
@@ -198,8 +244,8 @@ impl Gpu {
         let y1 = (y + height + REDISPLAY_MARGIN).min(self.height);
         let shown = GpuRect { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
         let offset = y as u64 * stride as u64 + x as u64 * 4;
-        let ok = self.command_ok(TransferToHost2d { hdr: hdr(CMD_TRANSFER_TO_HOST_2D), r, offset, resource_id: RESOURCE_ID, padding: 0 })
-            .and_then(|()| self.command_ok(ResourceFlush { hdr: hdr(CMD_RESOURCE_FLUSH), r: shown, resource_id: RESOURCE_ID, padding: 0 }));
+        let ok = self.command_ok(TransferToHost2d { hdr: hdr(CMD_TRANSFER_TO_HOST_2D), r, offset, resource_id: self.resource, padding: 0 })
+            .and_then(|()| self.command_ok(ResourceFlush { hdr: hdr(CMD_RESOURCE_FLUSH), r: shown, resource_id: self.resource, padding: 0 }));
         if ok.is_err() {
             log::error!("flush of {}x{} at ({}, {}) failed", width, height, x, y);
         }
@@ -216,36 +262,21 @@ pub fn init(fb_phys: usize, width: u32, height: u32) -> Result<(), &'static str>
     let queue = VirtQueue::new(&dev, CONTROLQ, QUEUE_SIZE).ok_or("control queue unavailable")?;
     let page = frame::alloc_zeroed().ok_or("out of memory")?;
     dev.finish_init();
-    let mut gpu = Gpu { dev, queue, page, width, height };
+    let mut gpu = Gpu { dev, queue, page, width: 0, height: 0, resource: 0 };
 
     if let Some((w, h)) = gpu.display_info() {
         log::debug!("host prefers {}x{}", w, h);
     }
-    gpu.command_ok(ResourceCreate2d {
-        hdr: hdr(CMD_RESOURCE_CREATE_2D),
-        resource_id: RESOURCE_ID,
-        format: FORMAT_B8G8R8X8_UNORM,
-        width,
-        height,
-    })?;
-    gpu.command_ok(ResourceAttachBacking {
-        hdr: hdr(CMD_RESOURCE_ATTACH_BACKING),
-        resource_id: RESOURCE_ID,
-        nr_entries: 1,
-        addr: fb_phys as u64,
-        length: width * height * 4,
-        padding: 0,
-    })?;
-    gpu.command_ok(SetScanout {
-        hdr: hdr(CMD_SET_SCANOUT),
-        r: GpuRect { x: 0, y: 0, width, height },
-        scanout_id: SCANOUT,
-        resource_id: RESOURCE_ID,
-    })?;
-    gpu.flush(0, 0, width, height, width * 4);
+    gpu.scan_out(fb_phys, width, height)?;
     log::info!("virtio-gpu at slot {}", dev.slot());
     *GPU.lock() = Some(gpu);
     Ok(())
+}
+
+/// Shows the framebuffer at `fb_phys` as a `width` x `height` screen
+/// instead of the one shown now.
+pub fn set_mode(fb_phys: usize, width: u32, height: u32) -> Result<(), &'static str> {
+    GPU.lock().as_mut().ok_or("no virtio-gpu")?.scan_out(fb_phys, width, height)
 }
 
 /// Puts a rectangle of the framebuffer on screen.

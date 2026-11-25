@@ -190,8 +190,10 @@ fn decode_image(data: &[u8]) -> Result<Surface, &'static str> {
 }
 
 impl Browser {
+    /// Opens the browser at the browser.home setting's page, if any.
     pub fn new() -> Self {
-        Self::with_url(None)
+        let home = crate::settings::get("browser.home");
+        Self::with_url((!home.is_empty()).then_some(home.as_str()))
     }
 
     /// Opens the browser, optionally loading `url` right away.

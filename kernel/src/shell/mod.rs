@@ -51,6 +51,7 @@ enum UartCommand<'a> {
     Beep,
     Snd(&'a str),
     Play(&'a str),
+    Settings(&'a str),
 }
 
 impl<'a> UartCommand<'a> {
@@ -72,6 +73,9 @@ impl<'a> UartCommand<'a> {
         }
         if s == "snd" || s.starts_with("snd ") {
             return Some(UartCommand::Snd(s[3..].trim()));
+        }
+        if s == "settings" || s.starts_with("settings ") {
+            return Some(UartCommand::Settings(s[8..].trim()));
         }
         if s == "play" || s.starts_with("play ") {
             return Some(UartCommand::Play(s[4..].trim()));
@@ -268,6 +272,7 @@ impl<'a> UartCommand<'a> {
             },
             UartCommand::Kai(args) => crate::assistant::shell(args),
             UartCommand::Stats => crate::stats::print(),
+            UartCommand::Settings(args) => crate::settings::shell(args),
             UartCommand::Log(args) => {
                 let args: alloc::vec::Vec<&str> = args.split_whitespace().collect();
                 let result = match args.as_slice() {
@@ -531,7 +536,7 @@ pub extern "C" fn uart_read_task() -> ! {
             crate::print!("yes/no> ");
         } else {
             let (uid, name) = logins.last().unwrap();
-            crate::print!("{}@kos:{}{} ", name, fs::current_cwd(), if *uid == ROOT { "#" } else { ">" });
+            crate::print!("{}@{}:{}{} ", name, crate::settings::get("system.hostname"), fs::current_cwd(), if *uid == ROOT { "#" } else { ">" });
         }
         // Logging out on the desktop ends the line.
         let Some(s) = uart.read_s_unless(|| !users::logged_in()) else {

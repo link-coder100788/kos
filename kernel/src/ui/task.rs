@@ -19,8 +19,12 @@ const FRAME_MS: u64 = 33;
 
 pub extern "C" fn ui_task() -> ! {
     crate::scheduler::follow_session();
-    match display::init() {
-        Ok(name) => log::info!("{}x{} display ({})", display::WIDTH, display::HEIGHT, name),
+    // The settings say how big the screen is.
+    crate::filesys::fs_task::wait_until_ready();
+    crate::settings::load();
+    let (width, height) = crate::settings::resolution();
+    match display::init(width, height) {
+        Ok(name) => log::info!("{}x{} display ({})", width, height, name),
         Err(e) => {
             log::warn!("{}; UI disabled", e);
             loop {
@@ -29,7 +33,6 @@ pub extern "C" fn ui_task() -> ! {
         }
     }
     let mut wm = Wm::new();
-    crate::filesys::fs_task::wait_until_ready();
     let mut logged_in = None;
     loop {
         // Logging in (here or at the console) opens the desktop; logging

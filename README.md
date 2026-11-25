@@ -69,18 +69,37 @@ Options are passed as make variables:
 
 ### The desktop
 
-KOS boots into a 1024x768 desktop with a Terminal open.
+KOS boots into a desktop (1024x768 unless the settings say otherwise) with a Terminal open.
 
-- Click **KOS** in the taskbar for the menu: **Terminal**, **Browser**, **Programs**, **Task Manager**, **Paint**, **About KOS**.
+- Click **KOS** in the taskbar for the menu: **Terminal**, **Browser**, **Programs**, **Task Manager**, **Paint**, **K-AI**, **Settings**, **About KOS**.
 - Windows overlap: click one to raise it, drag it by the title bar, close it with the red box. The blue box next to it rolls the window up to just its title bar; click it again, or the window's taskbar button, to unroll it. The taskbar has a button per window and the date and local time. Most windows (Terminal, Browser, Task Manager, Programs, Paint, images and videos) resize: drag any edge or corner, or maximize with the box between the other two, or by double-clicking the title bar. Dragging a maximized window by its title bar brings it back to its old size.
 - The keyboard goes to the focused window.
 - **Programs** lists the programs on the disk; click one to run it. Its output appears in the Terminal.
 - **Task Manager** lists every task: programs first, with how they were started, their CPU use over the last second and their heap, then the kernel's own tasks. A line under the title shows the GPU (with KOS's QEMU): open GL contexts, frames per second and how busy it is. Select a program and click **End task** (or press Delete) to kill it; its windows close with it.
 - **Browser** renders HTML pages with [lighthouse](kernel/crates/lighthouse), a small HTML/CSS engine, including PNG, JPEG and BMP images. Click links to follow them (the status line shows where they go), and use **<** / **>** for back and forward. Form fields take clicks and typing, and Enter or a submit button sends the form (GET only). **Source** or Ctrl+U shows the raw response, and Ctrl+L goes to the address bar. Scroll with the wheel, arrow keys, Page Up/Down or Home/End. Both `http://` and `https://` work; https uses TLS 1.3 but doesn't check the server's certificate yet. There's no JavaScript, so sites that need it (like Google search) won't work.
 - **About KOS** shows live uptime, cores, memory use and how idle the CPU is.
+- **Settings** changes KOS's global settings (see below).
 - `open picture.png` in the shell opens a PNG, JPEG or BMP image in a window. Images bigger than the window scroll with the wheel, arrow keys, Page Up/Down and Home/End, or by dragging.
 
 The mouse and keyboard are virtio-input devices. The mouse is an absolute tablet, so the pointer just follows your cursor over the QEMU window.
+
+### Settings
+
+KOS has one set of settings for the whole computer, not one per user, and anyone logged in can change them. Open **Settings** in the KOS menu and click a setting's arrows (or select it with Up/Down and press Left/Right). For a text setting, click its box, type, and press Enter. At the console, `settings` lists them all, `settings <name>` explains one, `settings <name> <value>` changes it, and `settings reset [name]` puts one (or all of them) back. A change is saved and takes effect straight away; nothing needs a restart.
+
+| Setting | What it does |
+| --- | --- |
+| `display.resolution` | The screen size: 800x600 to 1920x1200 (default 1024x768). Windows that no longer fit shrink and move onto the screen. |
+| `desktop.wallpaper` | dusk, ocean, forest, sunset or graphite |
+| `desktop.logo` | The big KOS on the desktop, on or off |
+| `clock.format`, `clock.seconds`, `clock.date` | The taskbar clock: 24h or 12h, with or without seconds and the date |
+| `clock.utc_offset` | The time zone, like `+01:00`; `auto` takes the host's |
+| `mouse.double_click` | How fast (ms) a double click on a title bar has to be to maximize |
+| `sound.volume` | 0 to 100 (%), for everything KOS plays |
+| `system.hostname` | The computer's name, in the console prompt and `uname` |
+| `browser.home` | A URL the Browser opens with (empty: its own start page) |
+
+They're kept in `/.kos/settings` as `name = value` lines. Root can edit the file and then run `settings reload`. Adding a setting means adding an entry to `ALL` in `kernel/src/settings.rs` and reading it with `settings::get` wherever it applies.
 
 ### The shell
 
@@ -694,6 +713,7 @@ kernel/
     assistant/         K-AI: loading the model, its tools, confirmations
     filesys/           fs_task server, FAT and SimpleFS backends
     shell/             the shell: line input, commands
+    settings.rs        global settings (/.kos/settings) and the `settings` command
     ui/                compositor + window manager (wm.rs), apps/, drawing (gfx.rs), console mirror
     k/                 the K compiler (lexer → parser → typecheck → IR → AArch64 → KBIN)
     std/               in-kernel std: locks, Rc/RefCell, hash map, channels, threads, io::{Read, Write}, net::{TcpStream, TcpListener, UdpSocket}

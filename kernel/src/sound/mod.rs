@@ -321,16 +321,18 @@ impl Synth {
         if self.gain == 0 {
             return 0;
         }
-        match self.last {
+        let sample = match self.last {
             Out::Tone(hz) => {
                 // A full turn of the phase is one cycle.
                 self.phase = self.phase.wrapping_add((((hz as u64) << 32) / self.rate as u64) as u32);
                 let level = AMPLITUDE * self.gain / RAMP;
-                (if self.phase < 1 << 31 { level } else { -level }) as i16
+                if self.phase < 1 << 31 { level } else { -level }
             }
-            Out::Sample(s) => (s as i32 * self.gain / RAMP) as i16,
+            Out::Sample(s) => s as i32 * self.gain / RAMP,
             Out::Quiet => 0,
-        }
+        };
+        // The volume setting, in percent.
+        (sample * crate::settings::volume() as i32 / 100) as i16
     }
 }
 

@@ -1,7 +1,7 @@
 /// What `uname` reports, in the order its fields are laid out.
 pub const SYSTEM_UNAME: [&str; 5] = [
     "KOS",              // sysname
-    "kos",              // nodename
+    "kos",              // nodename (the system.hostname setting wins)
     "0.1.0",            // release
     "KOS Kernel 0.1.0", // version
     "aarch64",          // machine

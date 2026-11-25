@@ -149,6 +149,7 @@ impl ShellCommand {
                 println!("Network: net, ping <host>, dns <host or url>, fetch <url>, browse [url]");
                 println!("Sound: beep, snd <hz> (snd 0 stops), play <notes or file.wav> (e.g. play T140 O4 C D E F G2)");
                 println!("Assistant: kai <request> (try `kai` alone), kai --debug <request>");
+                println!("Settings: settings (list), settings <name> [value], settings reset [name] (or Settings in the KOS menu)");
                 println!("Users: su [name] (exit goes back), logout, passwd [name], useradd <name>, userdel <name>");
                 println!("Debugging (root): log [target level], dmesg [count] [text]; stats");
                 println!("System (root): mmu [addr], heap_remain, heap_test, load [seconds]");

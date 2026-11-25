@@ -9,6 +9,7 @@ pub mod kai;
 pub mod login;
 pub mod paint;
 pub mod programs;
+pub mod settings;
 pub mod taskmgr;
 pub mod terminal;
 pub mod video;

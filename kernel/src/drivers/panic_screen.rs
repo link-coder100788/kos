@@ -1,7 +1,7 @@
 //! A deliberately silly full-screen panic image. Call from your fault
 //! handlers before halting — it's cheap and doesn't allocate.
 
-use super::display::{self, clear, put_pixel, HEIGHT, WIDTH};
+use super::display::{self, clear, put_pixel};
 
 const BG: u32 = 0x001a1a2e;       // near-black navy
 const GLITCH: u32 = 0x00e94560;   // hot red/pink
@@ -9,8 +9,8 @@ const FACE: u32 = 0x00ffdd57;     // yellow
 const INK: u32 = 0x00202020;      // near-black, for eyes/mouth
 
 fn fill_rect(x0: usize, y0: usize, w: usize, h: usize, color: u32) {
-    for y in y0..(y0 + h).min(HEIGHT) {
-        for x in x0..(x0 + w).min(WIDTH) {
+    for y in y0..(y0 + h).min(display::height()) {
+        for x in x0..(x0 + w).min(display::width()) {
             put_pixel(x, y, color);
         }
     }
@@ -65,20 +65,24 @@ fn next_rand() -> u32 {
 /// glitchy background. Call this at the top of your sync/IRQ fault handlers,
 /// before you dump registers to UART and halt.
 pub fn draw_panic_screen() {
+    let (width, height) = (display::width(), display::height());
+    if width == 0 {
+        return;
+    }
     clear(BG);
 
     // Glitch bars at random heights/widths — feels appropriately "crashed."
     for _ in 0..14 {
-        let y = (next_rand() as usize) % HEIGHT;
+        let y = (next_rand() as usize) % height;
         let h = 2 + (next_rand() as usize) % 6;
-        let w = 40 + (next_rand() as usize) % (WIDTH / 2);
-        let x = (next_rand() as usize) % WIDTH.saturating_sub(w).max(1);
+        let w = 40 + (next_rand() as usize) % (width / 2);
+        let x = (next_rand() as usize) % width.saturating_sub(w).max(1);
         fill_rect(x, y, w, h, GLITCH);
     }
 
     // The face.
-    let cx = WIDTH / 2;
-    let cy = HEIGHT / 2;
+    let cx = width / 2;
+    let cy = height / 2;
     let half = 140usize;
     fill_rect(cx.saturating_sub(half), cy.saturating_sub(half), half * 2, half * 2, FACE);
 
